@@ -11,7 +11,7 @@
 - [QWED Finance](https://github.com/QWED-AI/qwed-finance): NPV, IRR, and ISO 20022 compliance.
 
 ## Usage Rules
-- Never use floating point math for financial verification; always use `decimal.Decimal`.
+- Never use floating-point math for financial verification; always use `decimal.Decimal`.
 - Agent-to-Agent communications must be routed through the `qwed-a2a` interceptor before forwarding.
 - All inter-agent payloads require cryptographic attestation via JWT (ES256) before acceptance.
 - Verification proofs are deterministic and reproducible; no randomness in verification logic.

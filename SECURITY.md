@@ -15,7 +15,7 @@ We take the security of QWED A2A very seriously. If you discover a security vuln
 Please do **not** report security vulnerabilities through public GitHub issues.
 
 Instead, please report them via email to:
-**rahul@qwedai.com**
+**security@qwedai.com**
 
 Please include as much information as possible to help us reproduce and fix the issue, including:
 *   Steps to reproduce the vulnerability.
@@ -26,8 +26,8 @@ Please include as much information as possible to help us reproduce and fix the 
 
 We are committed to addressing security issues promptly.
 *   We will acknowledge your report within **24 hours**.
-*   We will work with you to understand and resolve the issue.
-*   We will keep you updated on our progress.
+*   Our team will work with you to understand and resolve the issue.
+*   Expect regular progress updates throughout the process.
 
 ### Reporter Credit
 
