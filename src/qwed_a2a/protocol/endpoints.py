@@ -4,33 +4,38 @@ QWED A2A Protocol Endpoints.
 FastAPI router exposing the A2A verification gateway via HTTP.
 """
 
+import threading
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
-from pydantic import ValidationError
 
+from qwed_a2a import __version__
 from qwed_a2a.interceptor import A2AVerificationInterceptor
 from qwed_a2a.protocol.schema import AgentMessage, InterceptorConfig
-from qwed_a2a.utils.telemetry import get_metrics
+from qwed_a2a.utils.telemetry import get_metrics, logger
 
 router = APIRouter(prefix="/a2a", tags=["A2A Interceptor"])
 
-# Module-level interceptor instance (configured at app startup)
+# Thread-safe interceptor singleton
+_interceptor_lock = threading.Lock()
 _interceptor: A2AVerificationInterceptor | None = None
 
 
 def get_interceptor() -> A2AVerificationInterceptor:
-    """Get or create the interceptor singleton."""
+    """Get or create the interceptor singleton (thread-safe)."""
     global _interceptor
-    if _interceptor is None:
-        _interceptor = A2AVerificationInterceptor()
+    with _interceptor_lock:
+        if _interceptor is None:
+            _interceptor = A2AVerificationInterceptor()
     return _interceptor
 
 
 def configure_interceptor(config: InterceptorConfig) -> None:
-    """Reconfigure the interceptor at runtime."""
+    """Reconfigure the interceptor at runtime (atomic swap)."""
     global _interceptor
-    _interceptor = A2AVerificationInterceptor(config=config)
+    new_interceptor = A2AVerificationInterceptor(config=config)
+    with _interceptor_lock:
+        _interceptor = new_interceptor
 
 
 @router.post("/intercept", response_model=Dict[str, Any])
@@ -41,9 +46,18 @@ async def intercept_message(message: AgentMessage) -> Dict[str, Any]:
     Accepts an AgentMessage, runs it through the verification pipeline,
     and returns a VerificationVerdict.
     """
-    interceptor = get_interceptor()
-    verdict = await interceptor.intercept(message)
-    return verdict.model_dump(mode="json")
+    try:
+        interceptor = get_interceptor()
+        verdict = await interceptor.intercept(message)
+        return verdict.model_dump(mode="json")
+    except RuntimeError as exc:
+        logger.error("Interceptor runtime error: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        logger.error("Interceptor internal error: %s", exc)
+        raise HTTPException(
+            status_code=500, detail=f"Internal interceptor error: {exc}"
+        )
 
 
 @router.get("/health")
@@ -52,7 +66,7 @@ async def health_check() -> Dict[str, str]:
     return {
         "status": "healthy",
         "service": "qwed-a2a",
-        "version": "0.1.0",
+        "version": __version__,
     }
 
 

@@ -20,7 +20,7 @@ from qwed_a2a.protocol.schema import (
     VerdictStatus,
     VerificationVerdict,
 )
-from qwed_a2a.security.crypto import A2ACryptoService
+from qwed_a2a.security.crypto import A2ACryptoService, HAS_CRYPTO
 from qwed_a2a.security.trust_boundary import TrustBoundary
 from qwed_a2a.utils.telemetry import logger, record_intercept, trace_intercept
 
@@ -34,7 +34,7 @@ class A2AVerificationInterceptor:
         1. Validate incoming message schema (Pydantic)
         2. Enforce trust boundary (allowlist/blocklist/rate limit)
         3. Route payload to appropriate verification engine
-        4. Sign the verdict with JWT attestation
+        4. Sign the verdict with JWT attestation (if crypto available)
         5. Return structured VerificationVerdict
     """
 
@@ -45,22 +45,38 @@ class A2AVerificationInterceptor:
         trust_boundary: Optional[TrustBoundary] = None,
     ):
         self.config = config or InterceptorConfig()
-        self.crypto = crypto_service or A2ACryptoService()
         self.trust = trust_boundary or TrustBoundary()
 
+        # Graceful crypto degradation — attestations disabled if deps missing
+        if crypto_service is not None:
+            self.crypto: Optional[A2ACryptoService] = crypto_service
+        elif HAS_CRYPTO:
+            self.crypto = A2ACryptoService()
+        else:
+            self.crypto = None
+            logger.warning(
+                "Crypto dependencies unavailable; attestation JWTs will be disabled"
+            )
+
     @trace_intercept
-    async def intercept(self, message: AgentMessage) -> VerificationVerdict:
+    async def intercept(
+        self,
+        message: AgentMessage,
+        trace_id: Optional[str] = None,
+    ) -> VerificationVerdict:
         """
         Primary entrypoint: intercept and verify an agent message.
 
         Args:
             message: Validated AgentMessage to process.
+            trace_id: Optional deterministic trace ID (auto-generated if None).
 
         Returns:
             VerificationVerdict with status, attestation, and audit trace.
         """
         start_time = time.perf_counter()
-        trace_id = f"a2a_{uuid.uuid4().hex[:12]}"
+        if trace_id is None:
+            trace_id = f"a2a_{uuid.uuid4().hex[:12]}"
 
         # --- Step 1: Enforce trust boundary ---
         allowed, rejection_reason = self.trust.evaluate(
@@ -173,6 +189,7 @@ class A2AVerificationInterceptor:
         Lightweight deterministic financial verification.
 
         Checks mathematical claims in the payload using Decimal arithmetic.
+        All comparisons stay in Decimal to avoid floating-point precision loss.
         """
         data = payload.get("data", {})
         claimed_total = data.get("claimed_total")
@@ -192,28 +209,29 @@ class A2AVerificationInterceptor:
             quantity = item.get("quantity", 1)
             computed_total += Decimal(str(amount)) * Decimal(str(quantity))
 
-        computed_total = float(
-            computed_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        computed_total = computed_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        claimed_decimal = Decimal(str(claimed_total)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
         )
-        claimed = float(claimed_total)
+        tolerance = Decimal("0.01")
 
-        if abs(computed_total - claimed) > 0.01:
+        if abs(computed_total - claimed_decimal) > tolerance:
             return {
                 "verified": False,
                 "engine": "finance_guard",
                 "reason": (
                     f"Mathematical hallucination detected: "
-                    f"claimed_total={claimed}, computed_total={computed_total}"
+                    f"claimed_total={claimed_total}, computed_total={computed_total}"
                 ),
-                "computed_total": computed_total,
-                "claimed_total": claimed,
+                "computed_total": float(computed_total),
+                "claimed_total": float(claimed_decimal),
             }
 
         return {
             "verified": True,
             "engine": "finance_guard",
             "reason": "Financial totals verified",
-            "computed_total": computed_total,
+            "computed_total": float(computed_total),
         }
 
     def _verify_logic(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -320,18 +338,23 @@ class A2AVerificationInterceptor:
         details: Optional[Dict[str, Any]] = None,
     ) -> VerificationVerdict:
         """Build a VerificationVerdict with optional JWT attestation."""
-        # Sign the verdict
-        payload_hash = A2ACryptoService.hash_content(
-            json.dumps(message.payload, sort_keys=True, default=str)
-        )
-        attestation_jwt = self.crypto.sign_verdict(
-            trace_id=trace_id,
-            verdict_status=status.value,
-            engine=engine,
-            sender_id=message.sender_agent_id,
-            receiver_id=message.receiver_agent_id,
-            payload_hash=payload_hash,
-        )
+        attestation_jwt = None
+
+        if self.crypto is not None:
+            try:
+                payload_hash = A2ACryptoService.hash_content(
+                    json.dumps(message.payload, sort_keys=True, default=str)
+                )
+                attestation_jwt = self.crypto.sign_verdict(
+                    trace_id=trace_id,
+                    verdict_status=status.value,
+                    engine=engine,
+                    sender_id=message.sender_agent_id,
+                    receiver_id=message.receiver_agent_id,
+                    payload_hash=payload_hash,
+                )
+            except Exception as exc:
+                logger.warning("Failed to sign attestation: %s", exc)
 
         return VerificationVerdict(
             status=status,

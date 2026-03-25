@@ -2,9 +2,12 @@
 Tests for the core A2A Verification Interceptor.
 """
 
+from decimal import Decimal
+
 import pytest
 
-from qwed_a2a.protocol.schema import VerdictStatus
+from qwed_a2a.interceptor import A2AVerificationInterceptor
+from qwed_a2a.protocol.schema import InterceptorConfig, VerdictStatus
 
 
 @pytest.mark.asyncio
@@ -25,8 +28,8 @@ class TestInterceptorFinancial:
         assert "hallucination" in verdict.reason.lower()
         assert verdict.engine_used == "finance_guard"
         assert verdict.details is not None
-        assert verdict.details["computed_total"] == 150.00
-        assert verdict.details["claimed_total"] == 999.99
+        assert Decimal(str(verdict.details["computed_total"])) == Decimal("150.00")
+        assert Decimal(str(verdict.details["claimed_total"])) == Decimal("999.99")
 
 
 @pytest.mark.asyncio
@@ -95,8 +98,6 @@ class TestTrustBoundaryIntegration:
 
     async def test_trusted_agent_bypass(self, crypto_service, trust_boundary, general_message):
         """Trusted agents should bypass verification."""
-        from qwed_a2a.protocol.schema import InterceptorConfig
-
         config = InterceptorConfig(
             trusted_agents=[general_message.sender_agent_id]
         )
@@ -108,7 +109,3 @@ class TestTrustBoundaryIntegration:
         verdict = await interceptor.intercept(general_message)
         assert verdict.status == VerdictStatus.FORWARDED
         assert verdict.engine_used == "bypass"
-
-
-# Import needed for the trusted agent test
-from qwed_a2a.interceptor import A2AVerificationInterceptor

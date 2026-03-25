@@ -99,13 +99,14 @@ class TrustBoundary:
             entry.count = 0
             entry.window_start = now
 
-        entry.count += 1
-
-        if entry.count > self.max_requests_per_minute:
+        # Check BEFORE incrementing — reject without counting the rejected request
+        if entry.count >= self.max_requests_per_minute:
             return False, (
                 f"Rate limit exceeded for {sender_id}->{receiver_id}: "
                 f"{entry.count}/{self.max_requests_per_minute} per minute"
             )
+
+        entry.count += 1
 
         # Default policy
         if not self.default_allow:

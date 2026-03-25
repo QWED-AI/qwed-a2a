@@ -8,7 +8,6 @@ Mirrors the AttestationService pattern from qwed-verification/core/attestation.p
 import hashlib
 import json
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 

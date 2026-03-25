@@ -86,8 +86,8 @@ class TestVerificationVerdict:
         assert v.status == VerdictStatus.FORWARDED
         assert v.reason is None
 
-    def test_blocked_verdict_with_reason(self):
-        """A blocked verdict should include a reason."""
+    def test_blocked_verdict_can_have_reason(self):
+        """A blocked verdict can include a reason."""
         v = VerificationVerdict(
             status=VerdictStatus.BLOCKED,
             audit_trace_id="a2a_blocked456",
@@ -95,6 +95,15 @@ class TestVerificationVerdict:
         )
         assert v.status == VerdictStatus.BLOCKED
         assert "hallucination" in v.reason
+
+    def test_blocked_verdict_without_reason_allowed(self):
+        """A blocked verdict without reason is allowed (reason is optional)."""
+        v = VerificationVerdict(
+            status=VerdictStatus.BLOCKED,
+            audit_trace_id="a2a_noreason789",
+        )
+        assert v.status == VerdictStatus.BLOCKED
+        assert v.reason is None
 
     def test_serialization_roundtrip(self):
         """Verdict should serialize and deserialize correctly."""

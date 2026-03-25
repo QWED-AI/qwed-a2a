@@ -5,7 +5,7 @@ Pydantic models enforcing typed contracts for Agent-to-Agent payloads.
 All inter-agent messages MUST conform to these schemas before processing.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -50,7 +50,8 @@ class AgentMessage(BaseModel):
         ..., description="The actual data payload to be verified"
     )
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow, description="ISO 8601 timestamp of message creation"
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="ISO 8601 timestamp of message creation",
     )
     signature: Optional[str] = Field(
         default=None, description="Optional JWT signature from the sender for tamper detection"
@@ -89,7 +90,8 @@ class VerificationVerdict(BaseModel):
         default=None, description="Which verification engine handled the check"
     )
     verified_at: datetime = Field(
-        default_factory=datetime.utcnow, description="Timestamp of the verification"
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Timestamp of the verification",
     )
     details: Optional[Dict[str, Any]] = Field(
         default=None, description="Raw verification engine output"
