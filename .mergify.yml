@@ -1,0 +1,13 @@
+pull_request_rules:
+  - name: Automatic merge on approval and successful CI
+    conditions:
+      - "#approved-reviews-by>=1"
+      - "check-success=test (3.10)"
+      - "check-success=test (3.11)"
+      - "check-success=test (3.12)"
+      - "check-success=lint"
+      - "check-success=SonarCloud Code Analysis"
+      - "check-success=Analyze (python)"
+    actions:
+      merge:
+        method: merge
