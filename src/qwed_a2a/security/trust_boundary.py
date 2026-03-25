@@ -94,8 +94,8 @@ class TrustBoundary:
         now = time.monotonic()
         entry = self._rate_limits[pair]
 
-        # Reset window if expired (60-second window)
-        if now - entry.window_start > 60.0:
+        # Initialize or reset window (handles first-request and expiry)
+        if entry.window_start == 0.0 or now - entry.window_start > 60.0:
             entry.count = 0
             entry.window_start = now
 

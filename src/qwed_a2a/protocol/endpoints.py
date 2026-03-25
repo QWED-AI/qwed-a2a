@@ -5,6 +5,7 @@ FastAPI router exposing the A2A verification gateway via HTTP.
 """
 
 import threading
+import uuid
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
@@ -48,7 +49,8 @@ async def intercept_message(message: AgentMessage) -> Dict[str, Any]:
     """
     try:
         interceptor = get_interceptor()
-        verdict = await interceptor.intercept(message)
+        trace_id = f"a2a_{uuid.uuid4().hex[:12]}"
+        verdict = await interceptor.intercept(message, trace_id=trace_id)
         return verdict.model_dump(mode="json")
     except RuntimeError as exc:
         logger.error("Interceptor runtime error: %s", exc)

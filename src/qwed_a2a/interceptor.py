@@ -8,8 +8,8 @@ This is the [QWED Core] module — all inter-agent messages flow through here.
 """
 
 import json
+import re
 import time
-import uuid
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, Optional
 
@@ -62,21 +62,19 @@ class A2AVerificationInterceptor:
     async def intercept(
         self,
         message: AgentMessage,
-        trace_id: Optional[str] = None,
+        trace_id: str,
     ) -> VerificationVerdict:
         """
         Primary entrypoint: intercept and verify an agent message.
 
         Args:
             message: Validated AgentMessage to process.
-            trace_id: Optional deterministic trace ID (auto-generated if None).
+            trace_id: Caller-provided deterministic trace ID for this intercept.
 
         Returns:
             VerificationVerdict with status, attestation, and audit trace.
         """
         start_time = time.perf_counter()
-        if trace_id is None:
-            trace_id = f"a2a_{uuid.uuid4().hex[:12]}"
 
         # --- Step 1: Enforce trust boundary ---
         allowed, rejection_reason = self.trust.evaluate(
@@ -112,7 +110,7 @@ class A2AVerificationInterceptor:
             engine_result = self._route_to_engine(message)
         except Exception as exc:
             logger.error("Verification engine error: %s", exc)
-            status = VerdictStatus.BLOCKED if self.config.block_on_error else VerdictStatus.ERROR
+            status = VerdictStatus.BLOCKED if self.config.block_on_error else VerdictStatus.FORWARDED
             verdict = self._build_verdict(
                 trace_id=trace_id,
                 status=status,
@@ -281,11 +279,24 @@ class A2AVerificationInterceptor:
             "reason": "No contradictions found in assertions",
         }
 
+    # Compiled regex patterns for case-insensitive, whitespace-tolerant detection
+    _DANGEROUS_PATTERNS: Dict[str, re.Pattern] = {
+        "eval": re.compile(r"\beval\s*\(", re.IGNORECASE),
+        "exec": re.compile(r"\bexec\s*\(", re.IGNORECASE),
+        "subprocess": re.compile(r"\bsubprocess\s*\.", re.IGNORECASE),
+        "os.system": re.compile(r"\bos\.system\s*\(", re.IGNORECASE),
+        "os.popen": re.compile(r"\bos\.popen\s*\(", re.IGNORECASE),
+        "__import__": re.compile(r"__import__\s*\(", re.IGNORECASE),
+        "compile": re.compile(r"\bcompile\s*\(", re.IGNORECASE),
+        "importlib": re.compile(r"\bimportlib\s*\.", re.IGNORECASE),
+    }
+
     def _verify_code(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Lightweight code security verification.
 
-        Scans for dangerous patterns (eval, exec, subprocess, os.system).
+        Scans for dangerous patterns using case-insensitive regex
+        to prevent trivial bypass via casing or whitespace.
         """
         code = payload.get("code", "")
 
@@ -296,21 +307,10 @@ class A2AVerificationInterceptor:
                 "reason": "No code to verify",
             }
 
-        dangerous_patterns = [
-            "eval(",
-            "exec(",
-            "subprocess.",
-            "os.system(",
-            "os.popen(",
-            "__import__(",
-            "compile(",
-            "importlib.",
-        ]
-
         found_threats = []
-        for pattern in dangerous_patterns:
-            if pattern in code:
-                found_threats.append(pattern.rstrip("("))
+        for label, pattern in self._DANGEROUS_PATTERNS.items():
+            if pattern.search(code):
+                found_threats.append(label)
 
         if found_threats:
             return {
