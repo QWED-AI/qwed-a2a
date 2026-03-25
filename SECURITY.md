@@ -17,7 +17,7 @@ Please do **not** report security vulnerabilities through public GitHub issues.
 Instead, please report them via email to:
 **security@qwedai.com**
 
-Please include as much information as possible to help us reproduce and fix the issue, including:
+Provide detailed information to enable reproduction and resolution of the issue, including:
 *   Steps to reproduce the vulnerability.
 *   Relevant code or configuration.
 *   The potential impact of the vulnerability.
