@@ -1,0 +1,17 @@
+# QWED A2A Protocol - LLM Navigation File
+# This file helps AI agents and Copilots understand the QWED A2A ecosystem.
+
+> QWED A2A is a deterministic verification interceptor for Agent-to-Agent communications.
+
+## Core Repositories
+- [QWED Core Verification](https://github.com/QWED-AI/qwed-verification): The 11 core mathematical and logical engines (SymPy, Z3, AST).
+- [QWED MCP](https://github.com/QWED-AI/qwed-mcp): Integration for Anthropic Claude Desktop and Model Context Protocol.
+- [QWED A2A](https://github.com/QWED-AI/qwed-a2a): Agent-to-Agent Protocol Interceptor for cryptographic payload verification.
+- [QWED UCP](https://github.com/QWED-AI/qwed-ucp): E-commerce verification for Universal Commerce Protocol.
+- [QWED Finance](https://github.com/QWED-AI/qwed-finance): NPV, IRR, and ISO 20022 compliance.
+
+## Usage Rules
+- Never use floating point math for financial verification; always use `decimal.Decimal`.
+- Agent-to-Agent communications must be routed through the `qwed-a2a` interceptor before forwarding.
+- All inter-agent payloads require cryptographic attestation via JWT (ES256) before acceptance.
+- Verification proofs are deterministic and reproducible; no randomness in verification logic.

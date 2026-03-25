@@ -11,6 +11,8 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    env:
+      MERGIFY_TOKEN: ${{ secrets.MERGIFY_TOKEN }}
     strategy:
       matrix:
         python-version: ['3.10', '3.11', '3.12']
@@ -33,20 +35,22 @@ jobs:
           python -m pytest tests/ -v --tb=short --junitxml=test-results.xml
 
       - name: Upload Test Results to Mergify CI Insights
-        uses: mergifyio/gha-test-insights@v1
-        if: always()
+        uses: Mergifyio/gha-mergify-ci@v6
+        if: ${{ always() && env.MERGIFY_TOKEN != '' }}
         with:
           token: ${{ secrets.MERGIFY_TOKEN }}
-          junit-reports: test-results.xml
+          report_path: test-results.xml
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
+        if: matrix.python-version == '3.11'
+        uses: SonarSource/sonarcloud-github-action@v4.2.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       - name: Run Snyk to check for vulnerabilities
-        uses: snyk/actions/python@master
+        if: matrix.python-version == '3.11'
+        uses: snyk/actions/python@v1.0.0
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:

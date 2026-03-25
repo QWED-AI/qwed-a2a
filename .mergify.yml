@@ -7,6 +7,7 @@ pull_request_rules:
       - "check-success=test (3.12)"
       - "check-success=lint"
       - "check-success=SonarCloud Code Analysis"
+      - "check-success=Analyze (python)"
     actions:
       merge:
         method: merge

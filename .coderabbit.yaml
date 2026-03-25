@@ -1,0 +1,16 @@
+# Root of qwed-a2a
+language: en-US
+reviews:
+  auto_review:
+    enabled: true
+  path_instructions:
+    - path: "**/*.py"
+      instructions: |
+        You are a security auditor for QWED A2A (Agent-to-Agent Protocol Interceptor).
+        
+        CRITICAL RULES:
+        1. NO NON-DETERMINISM: Flag usage of 'random', 'uuid.uuid4()', or 'datetime.now()' inside verification logic. Inputs must be injected.
+        2. SYMBOLIC MATH: Flag floating-point math (e.g., 0.1 + 0.2). Suggest 'decimal.Decimal' or 'sympy'.
+        3. SECURITY: Block 'eval()', 'exec()', or 'subprocess' unless wrapped in CodeGuard.
+        4. CRYPTO: Ensure all JWT operations use ES256 or stronger. Flag HS256 or 'none' algorithms.
+        5. TRUST BOUNDARY: All inter-agent payloads must be validated through Pydantic schemas before processing.
