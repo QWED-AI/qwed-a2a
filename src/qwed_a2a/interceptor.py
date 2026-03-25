@@ -45,7 +45,7 @@ class A2AVerificationInterceptor:
         trust_boundary: Optional[TrustBoundary] = None,
     ):
         self.config = config or InterceptorConfig()
-        self.trust = trust_boundary or TrustBoundary()
+        self.trust = trust_boundary or TrustBoundary(default_allow=True)
 
         # Graceful crypto degradation — attestations disabled if deps missing
         if crypto_service is not None:
@@ -260,7 +260,7 @@ class A2AVerificationInterceptor:
             else:
                 positive_claims.add(claim)
 
-        contradictions = positive_claims & negative_claims
+        contradictions = sorted(positive_claims & negative_claims)
 
         if contradictions:
             return {
@@ -270,7 +270,7 @@ class A2AVerificationInterceptor:
                     f"Logical contradiction detected: "
                     f"claims both asserted and negated: {contradictions}"
                 ),
-                "contradictions": list(contradictions),
+                "contradictions": contradictions,
             }
 
         return {
@@ -283,7 +283,10 @@ class A2AVerificationInterceptor:
     _DANGEROUS_PATTERNS: Dict[str, re.Pattern] = {
         "eval": re.compile(r"\beval\s*\(", re.IGNORECASE),
         "exec": re.compile(r"\bexec\s*\(", re.IGNORECASE),
-        "subprocess": re.compile(r"\bsubprocess\s*\.", re.IGNORECASE),
+        "subprocess": re.compile(
+            r"\b(?:subprocess\s*\.|import\s+subprocess\b|from\s+subprocess\s+import\b)",
+            re.IGNORECASE,
+        ),
         "os.system": re.compile(r"\bos\.system\s*\(", re.IGNORECASE),
         "os.popen": re.compile(r"\bos\.popen\s*\(", re.IGNORECASE),
         "__import__": re.compile(r"__import__\s*\(", re.IGNORECASE),

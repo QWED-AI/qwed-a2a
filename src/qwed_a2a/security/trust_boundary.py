@@ -2,7 +2,8 @@
 QWED A2A Trust Boundary Enforcement.
 
 Implements zero-trust execution isolation for inter-agent communication.
-Manages agent allowlists, blocklists, and per-pair rate limiting.
+Manages agent allowlists, blocklists, and token-bucket rate limiting
+with automatic eviction of cold pairs.
 """
 
 import time
@@ -12,11 +13,28 @@ from typing import Dict, Optional, Set, Tuple
 
 
 @dataclass
-class RateLimitEntry:
-    """Tracks request counts for rate limiting."""
+class TokenBucket:
+    """Token-bucket rate limiter for a single agent pair."""
 
-    count: int = 0
-    window_start: float = 0.0
+    tokens: float
+    capacity: float
+    refill_rate: float  # tokens per second
+    last_refill: float = 0.0
+
+    def consume(self, now: float) -> bool:
+        """
+        Try to consume one token. Returns True if allowed, False if rate-limited.
+        Automatically refills tokens based on elapsed time.
+        """
+        # Refill tokens
+        elapsed = now - self.last_refill
+        self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
+        self.last_refill = now
+
+        if self.tokens >= 1.0:
+            self.tokens -= 1.0
+            return True
+        return False
 
 
 class TrustBoundary:
@@ -24,13 +42,16 @@ class TrustBoundary:
     Zero-trust boundary for Agent-to-Agent communication.
 
     Evaluates whether a given agent pair is allowed to communicate
-    based on allowlists, blocklists, and rate limits.
+    based on allowlists, blocklists, and token-bucket rate limits.
+
+    Default policy is deny-all (default_allow=False) — agents must be
+    explicitly trusted or allowlisted to communicate.
     """
 
     def __init__(
         self,
         max_requests_per_minute: int = 60,
-        default_allow: bool = True,
+        default_allow: bool = False,
     ):
         self.max_requests_per_minute = max_requests_per_minute
         self.default_allow = default_allow
@@ -42,10 +63,12 @@ class TrustBoundary:
         # Pair-level controls
         self._blocked_pairs: Set[Tuple[str, str]] = set()
 
-        # Rate limiting per agent pair
-        self._rate_limits: Dict[Tuple[str, str], RateLimitEntry] = defaultdict(
-            RateLimitEntry
-        )
+        # Token-bucket rate limiting per agent pair
+        self._rate_limits: Dict[Tuple[str, str], TokenBucket] = {}
+
+        # Eviction threshold: remove idle buckets after this many seconds
+        self._eviction_ttl: float = 300.0  # 5 minutes
+        self._last_eviction: float = 0.0
 
     def block_agent(self, agent_id: str) -> None:
         """Add an agent to the global blocklist."""
@@ -69,6 +92,18 @@ class TrustBoundary:
         """Check if an agent is on the global allowlist."""
         return agent_id in self._trusted_agents
 
+    def _evict_cold_buckets(self, now: float) -> None:
+        """Remove token buckets for pairs idle beyond the TTL."""
+        if now - self._last_eviction < 60.0:
+            return  # Only run eviction once per minute
+        self._last_eviction = now
+        cold_pairs = [
+            pair for pair, bucket in self._rate_limits.items()
+            if now - bucket.last_refill > self._eviction_ttl
+        ]
+        for pair in cold_pairs:
+            del self._rate_limits[pair]
+
     def evaluate(
         self, sender_id: str, receiver_id: str
     ) -> Tuple[bool, Optional[str]]:
@@ -90,30 +125,31 @@ class TrustBoundary:
         if pair in self._blocked_pairs:
             return False, f"Communication pair {sender_id}->{receiver_id} is blocked"
 
-        # Check rate limit
-        now = time.monotonic()
-        entry = self._rate_limits[pair]
-
-        # Initialize or reset window (handles first-request and expiry)
-        if entry.window_start == 0.0 or now - entry.window_start > 60.0:
-            entry.count = 0
-            entry.window_start = now
-
-        # Check BEFORE incrementing — reject without counting the rejected request
-        if entry.count >= self.max_requests_per_minute:
-            return False, (
-                f"Rate limit exceeded for {sender_id}->{receiver_id}: "
-                f"{entry.count}/{self.max_requests_per_minute} per minute"
-            )
-
-        entry.count += 1
-
-        # Default policy
+        # Default policy check BEFORE rate-limit allocation (prevents map spray)
         if not self.default_allow:
-            # In strict mode, both agents must be explicitly trusted
             if sender_id not in self._trusted_agents:
                 return False, f"Sender '{sender_id}' is not in the trust allowlist"
             if receiver_id not in self._trusted_agents:
                 return False, f"Receiver '{receiver_id}' is not in the trust allowlist"
+
+        # Token-bucket rate limiting (only reached by allowed pairs)
+        now = time.monotonic()
+        self._evict_cold_buckets(now)
+
+        if pair not in self._rate_limits:
+            refill_rate = self.max_requests_per_minute / 60.0
+            self._rate_limits[pair] = TokenBucket(
+                tokens=float(self.max_requests_per_minute),
+                capacity=float(self.max_requests_per_minute),
+                refill_rate=refill_rate,
+                last_refill=now,
+            )
+
+        bucket = self._rate_limits[pair]
+        if not bucket.consume(now):
+            return False, (
+                f"Rate limit exceeded for {sender_id}->{receiver_id}: "
+                f"{self.max_requests_per_minute}/minute"
+            )
 
         return True, None

@@ -29,7 +29,7 @@ def crypto_service():
 @pytest.fixture
 def trust_boundary():
     """Fresh trust boundary for each test."""
-    return TrustBoundary(max_requests_per_minute=100)
+    return TrustBoundary(max_requests_per_minute=100, default_allow=True)
 
 
 @pytest.fixture
