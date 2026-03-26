@@ -45,7 +45,7 @@ class A2AVerificationInterceptor:
         trust_boundary: Optional[TrustBoundary] = None,
     ):
         self.config = config or InterceptorConfig()
-        self.trust = trust_boundary or TrustBoundary(default_allow=True)
+        self.trust = trust_boundary or TrustBoundary(default_allow=False)
 
         # Graceful crypto degradation — attestations disabled if deps missing
         if crypto_service is not None:
