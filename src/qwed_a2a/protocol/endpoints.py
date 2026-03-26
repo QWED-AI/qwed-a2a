@@ -23,21 +23,33 @@ _interceptor_lock = threading.Lock()
 _interceptor: A2AVerificationInterceptor | None = None
 
 
+def _load_trusted_agents(interceptor: A2AVerificationInterceptor) -> None:
+    """Load trusted agents from QWED_A2A_TRUSTED_AGENTS environment variable."""
+    trusted_env = os.environ.get("QWED_A2A_TRUSTED_AGENTS", "")
+    if trusted_env:
+        for agent in trusted_env.split(","):
+            agent_id = agent.strip()
+            if agent_id:
+                interceptor.trust.trust_agent(agent_id)
+                logger.info("Trusted agent registered: %s", agent_id)
+        logger.info(
+            "Zero-trust boundary initialized with %d trusted agent(s)",
+            len([a.strip() for a in trusted_env.split(",") if a.strip()])
+        )
+    else:
+        logger.warning(
+            "QWED_A2A_TRUSTED_AGENTS not set; zero-trust boundary will deny all requests"
+        )
+
+
 def get_interceptor() -> A2AVerificationInterceptor:
     """Get or create the interceptor singleton (thread-safe)."""
     global _interceptor
     with _interceptor_lock:
         if _interceptor is None:
             _interceptor = A2AVerificationInterceptor()
+            _load_trusted_agents(_interceptor)
             
-            # Load trusted agents from environment for the Zero-Trust default
-            trusted_env = os.environ.get("QWED_A2A_TRUSTED_AGENTS", "")
-            if trusted_env:
-                for agent in trusted_env.split(","):
-                    agent_id = agent.strip()
-                    if agent_id:
-                        _interceptor.trust.trust_agent(agent_id)
-                        
     return _interceptor
 
 
@@ -45,6 +57,10 @@ def configure_interceptor(config: InterceptorConfig) -> None:
     """Reconfigure the interceptor at runtime (atomic swap)."""
     global _interceptor
     new_interceptor = A2AVerificationInterceptor(config=config)
+    
+    # Reload trusted agents to maintain zero-trust allowlist
+    _load_trusted_agents(new_interceptor)
+    
     with _interceptor_lock:
         _interceptor = new_interceptor
 
