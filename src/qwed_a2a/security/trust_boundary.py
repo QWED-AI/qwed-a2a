@@ -127,10 +127,8 @@ class TrustBoundary:
 
         # Default policy check BEFORE rate-limit allocation (prevents map spray)
         if not self.default_allow:
-            if sender_id not in self._trusted_agents:
-                return False, f"Sender '{sender_id}' is not in the trust allowlist"
-            if receiver_id not in self._trusted_agents:
-                return False, f"Receiver '{receiver_id}' is not in the trust allowlist"
+            if sender_id not in self._trusted_agents and receiver_id not in self._trusted_agents:
+                return False, f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist"
 
         # Token-bucket rate limiting (only reached by allowed pairs)
         now = time.monotonic()
