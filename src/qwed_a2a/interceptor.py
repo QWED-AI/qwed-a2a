@@ -47,6 +47,11 @@ class A2AVerificationInterceptor:
         self.config = config or InterceptorConfig()
         self.trust = trust_boundary or TrustBoundary(default_allow=False)
 
+        # Sync trusted agents from configuration into the TrustBoundary allowlist
+        if self.config.trusted_agents:
+            for agent in self.config.trusted_agents:
+                self.trust.trust_agent(agent)
+
         # Graceful crypto degradation — attestations disabled if deps missing
         if crypto_service is not None:
             self.crypto: Optional[A2ACryptoService] = crypto_service
