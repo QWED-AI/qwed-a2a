@@ -4,6 +4,7 @@ QWED A2A Protocol Endpoints.
 FastAPI router exposing the A2A verification gateway via HTTP.
 """
 
+import os
 import threading
 import uuid
 from typing import Any, Dict
@@ -28,6 +29,15 @@ def get_interceptor() -> A2AVerificationInterceptor:
     with _interceptor_lock:
         if _interceptor is None:
             _interceptor = A2AVerificationInterceptor()
+            
+            # Load trusted agents from environment for the Zero-Trust default
+            trusted_env = os.environ.get("QWED_A2A_TRUSTED_AGENTS", "")
+            if trusted_env:
+                for agent in trusted_env.split(","):
+                    agent_id = agent.strip()
+                    if agent_id:
+                        _interceptor.trust.trust_agent(agent_id)
+                        
     return _interceptor
 
 

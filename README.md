@@ -255,7 +255,7 @@ If `cryptography` and `PyJWT` are not installed, the interceptor operates **with
 
 ## 🚀 FastAPI Gateway
 
-QWED A2A includes a ready-to-use HTTP gateway:
+QWED A2A includes a ready-to-use HTTP gateway. Because the interceptor uses a zero-trust default posture, you must whitelist agents via the `QWED_A2A_TRUSTED_AGENTS` environment variable.
 
 ```python
 from fastapi import FastAPI
@@ -264,7 +264,7 @@ from qwed_a2a.protocol.endpoints import router
 app = FastAPI(title="QWED A2A Gateway")
 app.include_router(router)
 
-# uvicorn main:app --host 0.0.0.0 --port 8000
+# QWED_A2A_TRUSTED_AGENTS="agent-A,agent-B" uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 ### Endpoints
