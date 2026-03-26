@@ -89,7 +89,7 @@ asyncio.run(main())
 ```
 
 **Output:**
-```
+```text
 Status:  forwarded ✅
 Engine:  finance_guard
 JWT:     eyJhbGciOiJFUzI1NiIsInR5cCI6InF3ZWQtYTJhLWF0dGVz...
@@ -101,7 +101,7 @@ JWT:     eyJhbGciOiJFUzI1NiIsInR5cCI6InF3ZWQtYTJhLWF0dGVz...
 
 Every inter-agent message flows through **five deterministic stages**:
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │                    QWED A2A INTERCEPTOR                          │
 │                                                                  │
@@ -119,11 +119,11 @@ Every inter-agent message flows through **five deterministic stages**:
 
 | Stage | Component | What It Does |
 |-------|-----------|-------------|
-| **1. Schema** | Pydantic `AgentMessage` | Validates sender/receiver IDs, payload type, timestamp |
-| **2. Trust** | `TrustBoundary` | Blocklists, allowlists, pair blocks, token-bucket rate limiting |
+| **0. Schema** *(endpoint layer)* | Pydantic `AgentMessage` | Validates sender/receiver IDs, payload type, timestamp — runs at FastAPI before `intercept()` |
+| **1. Trust** | `TrustBoundary` | Blocklists, allowlists, pair blocks, token-bucket rate limiting |
+| **2. Bypass** | Trusted agents check | Skips verification for agents in `config.trusted_agents` |
 | **3. Engine** | `_route_to_engine()` | Routes to `finance_guard`, `logic_guard`, `code_guard`, or `passthrough` |
-| **4. JWT** | `A2ACryptoService` | Signs verdict with ES256 JWT — includes payload hash and trace ID |
-| **5. Verdict** | `VerificationVerdict` | Returns `forwarded` or `blocked` with reason, attestation, and audit trace |
+| **4. Verdict + JWT** | `A2ACryptoService` | Builds verdict and signs with ES256 JWT (payload hash, trace ID) |
 
 ---
 
@@ -288,7 +288,7 @@ curl -X POST http://localhost:8000/a2a/intercept \
 
 ## 🏗️ Architecture
 
-```
+```text
 qwed-a2a/
 ├── src/qwed_a2a/
 │   ├── interceptor.py          # Core verification pipeline
