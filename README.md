@@ -64,6 +64,10 @@ from qwed_a2a.protocol.schema import AgentMessage, PayloadType
 
 interceptor = A2AVerificationInterceptor()
 
+# Trust the communicating agents (Zero-Trust default)
+interceptor.trust.trust_agent("procurement-agent")
+interceptor.trust.trust_agent("treasury-agent")
+
 message = AgentMessage(
     sender_agent_id="procurement-agent",
     receiver_agent_id="treasury-agent",
