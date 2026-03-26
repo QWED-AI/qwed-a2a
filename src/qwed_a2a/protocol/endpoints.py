@@ -31,7 +31,7 @@ def _load_trusted_agents(interceptor: A2AVerificationInterceptor) -> None:
             agent_id = agent.strip()
             if agent_id:
                 interceptor.trust.trust_agent(agent_id)
-                logger.info("Trusted agent registered: %s", agent_id)
+                logger.info("Trusted agent registered")
         logger.info(
             "Zero-trust boundary initialized with %d trusted agent(s)",
             len([a.strip() for a in trusted_env.split(",") if a.strip()])
