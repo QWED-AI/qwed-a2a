@@ -206,7 +206,7 @@ boundary.block_pair("agent-A", "agent-B")
 | 1 | Sender on global blocklist? | **BLOCKED** |
 | 2 | Receiver on global blocklist? | **BLOCKED** |
 | 3 | Pair explicitly blocked? | **BLOCKED** |
-| 4 | (Strict mode) Both in allowlist? | **BLOCKED** |
+| 4 | (Strict mode) Neither in allowlist? | **BLOCKED** |
 | 5 | Token bucket has tokens? | **RATE LIMITED** |
 | ✅ | All passed | **ALLOWED** |
 
