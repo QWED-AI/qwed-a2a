@@ -18,10 +18,10 @@ jobs:
         python-version: ['3.10', '3.11', '3.12']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -35,7 +35,7 @@ jobs:
           python -m pytest tests/ -v --tb=short --junitxml=test-results.xml
 
       - name: Upload Test Results to Mergify CI Insights
-        uses: Mergifyio/gha-mergify-ci@v6
+        uses: Mergifyio/gha-mergify-ci@668bd8fd12563b7816b51f69ad8a13652925ac55 # v6
         if: ${{ always() && env.MERGIFY_TOKEN != '' }}
         with:
           token: ${{ secrets.MERGIFY_TOKEN }}
@@ -43,14 +43,14 @@ jobs:
 
       - name: SonarCloud Scan
         if: matrix.python-version == '3.11'
-        uses: SonarSource/sonarcloud-github-action@v3.0.0
+        uses: SonarSource/sonarcloud-github-action@eb211723266fe8e83102bac7361f0a05c3ac1d1b # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       - name: Run Snyk to check for vulnerabilities
         if: matrix.python-version == '3.11'
-        uses: snyk/actions/python@v1.0.0
+        uses: snyk/actions/python@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
@@ -61,10 +61,10 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
