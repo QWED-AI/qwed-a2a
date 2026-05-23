@@ -98,8 +98,10 @@ class TestTrustBoundaryIntegration:
         assert verdict.status == VerdictStatus.BLOCKED
         assert "trust boundary" in verdict.reason.lower()
 
-    async def test_trusted_agent_bypass(self, crypto_service, trust_boundary, general_message):
-        """Trusted agents should bypass verification."""
+    async def test_trusted_agent_no_longer_bypasses_verification(
+        self, crypto_service, trust_boundary, general_message
+    ):
+        """Trusted agents should still route through verification engines."""
         config = InterceptorConfig(
             trusted_agents=[general_message.sender_agent_id]
         )
@@ -108,6 +110,28 @@ class TestTrustBoundaryIntegration:
             crypto_service=crypto_service,
             trust_boundary=trust_boundary,
         )
-        verdict = await interceptor.intercept(general_message, trace_id="t_trust_bypass")
+        verdict = await interceptor.intercept(general_message, trace_id="t_trust_no_bypass")
         assert verdict.status == VerdictStatus.FORWARDED
-        assert verdict.engine_used == "bypass"
+        assert verdict.engine_used == "passthrough"
+
+    async def test_trusted_agent_financial_fraud_is_blocked(
+        self, crypto_service, trust_boundary, hallucinated_financial_message
+    ):
+        """Trusted agents are still verified and blocked on financial hallucinations."""
+        config = InterceptorConfig(
+            trusted_agents=[hallucinated_financial_message.sender_agent_id]
+        )
+        interceptor = A2AVerificationInterceptor(
+            config=config,
+            crypto_service=crypto_service,
+            trust_boundary=trust_boundary,
+        )
+
+        verdict = await interceptor.intercept(
+            hallucinated_financial_message, trace_id="t_trust_fin_fraud"
+        )
+
+        assert verdict.status == VerdictStatus.BLOCKED
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.reason is not None
+        assert "hallucination" in verdict.reason.lower()

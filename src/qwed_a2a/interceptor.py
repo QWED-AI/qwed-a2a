@@ -96,21 +96,7 @@ class A2AVerificationInterceptor:
             self._record(verdict, message.sender_agent_id, start_time)
             return verdict
 
-        # --- Step 2: Check trusted agent bypass ---
-        if self.config.trusted_agents and (
-            message.sender_agent_id in self.config.trusted_agents
-        ):
-            verdict = self._build_verdict(
-                trace_id=trace_id,
-                status=VerdictStatus.FORWARDED,
-                reason="Sender is on the trusted agents allowlist",
-                engine="bypass",
-                message=message,
-            )
-            self._record(verdict, message.sender_agent_id, start_time)
-            return verdict
-
-        # --- Step 3: Route to verification engine ---
+        # --- Step 2: Route to verification engine ---
         try:
             engine_result = self._route_to_engine(message)
         except Exception as exc:
