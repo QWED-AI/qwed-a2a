@@ -98,15 +98,14 @@ class TrustBoundary:
             return  # Only run eviction once per minute
         self._last_eviction = now
         cold_pairs = [
-            pair for pair, bucket in self._rate_limits.items()
+            pair
+            for pair, bucket in self._rate_limits.items()
             if now - bucket.last_refill > self._eviction_ttl
         ]
         for pair in cold_pairs:
             del self._rate_limits[pair]
 
-    def evaluate(
-        self, sender_id: str, receiver_id: str
-    ) -> Tuple[bool, Optional[str]]:
+    def evaluate(self, sender_id: str, receiver_id: str) -> Tuple[bool, Optional[str]]:
         """
         Evaluate whether a sender->receiver communication is allowed.
 
@@ -127,8 +126,14 @@ class TrustBoundary:
 
         # Default policy check BEFORE rate-limit allocation (prevents map spray)
         if not self.default_allow:
-            if sender_id not in self._trusted_agents and receiver_id not in self._trusted_agents:
-                return False, f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist"
+            if (
+                sender_id not in self._trusted_agents
+                and receiver_id not in self._trusted_agents
+            ):
+                return (
+                    False,
+                    f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist",
+                )
 
         # Token-bucket rate limiting (only reached by allowed pairs)
         now = time.monotonic()

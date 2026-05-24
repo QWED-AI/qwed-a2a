@@ -115,7 +115,11 @@ class A2AVerificationInterceptor:
             engine_result = self._route_to_engine(message)
         except Exception as exc:
             logger.error("Verification engine error: %s", exc)
-            status = VerdictStatus.BLOCKED if self.config.block_on_error else VerdictStatus.FORWARDED
+            status = (
+                VerdictStatus.BLOCKED
+                if self.config.block_on_error
+                else VerdictStatus.FORWARDED
+            )
             verdict = self._build_verdict(
                 trace_id=trace_id,
                 status=status,
@@ -212,7 +216,9 @@ class A2AVerificationInterceptor:
             quantity = item.get("quantity", 1)
             computed_total += Decimal(str(amount)) * Decimal(str(quantity))
 
-        computed_total = computed_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        computed_total = computed_total.quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
         claimed_decimal = Decimal(str(claimed_total)).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )

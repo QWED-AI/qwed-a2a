@@ -38,10 +38,16 @@ class AgentMessage(BaseModel):
     """
 
     sender_agent_id: str = Field(
-        ..., min_length=1, max_length=256, description="Unique identifier of the sending agent"
+        ...,
+        min_length=1,
+        max_length=256,
+        description="Unique identifier of the sending agent",
     )
     receiver_agent_id: str = Field(
-        ..., min_length=1, max_length=256, description="Unique identifier of the receiving agent"
+        ...,
+        min_length=1,
+        max_length=256,
+        description="Unique identifier of the receiving agent",
     )
     payload_type: PayloadType = Field(
         default=PayloadType.GENERAL, description="Classification of the payload content"
@@ -54,10 +60,12 @@ class AgentMessage(BaseModel):
         description="ISO 8601 timestamp of message creation",
     )
     signature: Optional[str] = Field(
-        default=None, description="Optional JWT signature from the sender for tamper detection"
+        default=None,
+        description="Optional JWT signature from the sender for tamper detection",
     )
     metadata: Optional[Dict[str, Any]] = Field(
-        default=None, description="Optional metadata (correlation IDs, trace context, etc.)"
+        default=None,
+        description="Optional metadata (correlation IDs, trace context, etc.)",
     )
 
     @field_validator("sender_agent_id", "receiver_agent_id")
@@ -84,7 +92,8 @@ class VerificationVerdict(BaseModel):
         ..., description="Unique trace ID for this verification event"
     )
     attestation_jwt: Optional[str] = Field(
-        default=None, description="Signed JWT attestation proving the verification took place"
+        default=None,
+        description="Signed JWT attestation proving the verification took place",
     )
     engine_used: Optional[str] = Field(
         default=None, description="Which verification engine handled the check"
@@ -113,10 +122,14 @@ class InterceptorConfig(BaseModel):
         default=True, description="Route code payloads to AST security scanning"
     )
     block_on_error: bool = Field(
-        default=True, description="Block forwarding if verification encounters an internal error"
+        default=True,
+        description="Block forwarding if verification encounters an internal error",
     )
     max_payload_size_bytes: int = Field(
-        default=1_048_576, ge=1024, le=10_485_760, description="Maximum payload size (1MB default)"
+        default=1_048_576,
+        ge=1024,
+        le=10_485_760,
+        description="Maximum payload size (1MB default)",
     )
     trusted_agents: Optional[List[str]] = Field(
         default=None, description="Allowlist of agent IDs that bypass verification"
