@@ -34,7 +34,7 @@ class A2AVerificationInterceptor:
         1. Validate incoming message schema (Pydantic)
         2. Enforce trust boundary (allowlist/blocklist/rate limit)
         3. Route payload to appropriate verification engine
-        4. Sign the verdict with JWT attestation (if crypto available)
+        4. Sign the verdict with JWT attestation
         5. Return structured VerificationVerdict
     """
 
@@ -52,15 +52,17 @@ class A2AVerificationInterceptor:
             for agent in self.config.trusted_agents:
                 self.trust.trust_agent(agent)
 
-        # Graceful crypto degradation — attestations disabled if deps missing
+        # Fail closed if the attestation stack is unavailable. Unsigned verdicts
+        # would look operational while dropping QWED's core trust guarantee.
         if crypto_service is not None:
-            self.crypto: Optional[A2ACryptoService] = crypto_service
+            self.crypto: A2ACryptoService = crypto_service
         elif HAS_CRYPTO:
             self.crypto = A2ACryptoService()
         else:
-            self.crypto = None
-            logger.warning(
-                "Crypto dependencies unavailable; attestation JWTs will be disabled"
+            raise RuntimeError(
+                "QWED-A2A requires 'cryptography' and 'PyJWT' packages. "
+                "Install with: pip install qwed-a2a. "
+                "Operating without JWT attestations violates fail-closed policy."
             )
 
     @trace_intercept
@@ -345,24 +347,24 @@ class A2AVerificationInterceptor:
         message: AgentMessage,
         details: Optional[Dict[str, Any]] = None,
     ) -> VerificationVerdict:
-        """Build a VerificationVerdict with optional JWT attestation."""
-        attestation_jwt = None
-
-        if self.crypto is not None:
-            try:
-                payload_hash = A2ACryptoService.hash_content(
-                    json.dumps(message.payload, sort_keys=True, default=str)
-                )
-                attestation_jwt = self.crypto.sign_verdict(
-                    trace_id=trace_id,
-                    verdict_status=status.value,
-                    engine=engine,
-                    sender_id=message.sender_agent_id,
-                    receiver_id=message.receiver_agent_id,
-                    payload_hash=payload_hash,
-                )
-            except Exception as exc:
-                logger.warning("Failed to sign attestation: %s", exc)
+        """Build a VerificationVerdict with a required JWT attestation."""
+        try:
+            payload_hash = A2ACryptoService.hash_content(
+                json.dumps(message.payload, sort_keys=True, default=str)
+            )
+            attestation_jwt = self.crypto.sign_verdict(
+                trace_id=trace_id,
+                verdict_status=status.value,
+                engine=engine,
+                sender_id=message.sender_agent_id,
+                receiver_id=message.receiver_agent_id,
+                payload_hash=payload_hash,
+            )
+        except Exception as exc:
+            logger.error("Failed to sign attestation: %s", exc)
+            raise RuntimeError(
+                "Failed to sign attestation; refusing to return an unsigned verdict"
+            ) from exc
 
         return VerificationVerdict(
             status=status,

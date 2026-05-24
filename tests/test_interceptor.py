@@ -67,6 +67,30 @@ class TestInterceptorLogic:
 class TestInterceptorGeneral:
     """General message handling tests."""
 
+    async def test_missing_crypto_dependencies_fail_startup(self, monkeypatch):
+        """Missing crypto dependencies should fail closed during startup."""
+        monkeypatch.setattr("qwed_a2a.interceptor.HAS_CRYPTO", False)
+
+        with pytest.raises(RuntimeError, match="requires 'cryptography' and 'PyJWT'"):
+            A2AVerificationInterceptor()
+
+    async def test_attestation_signing_failure_is_not_returned_as_normal_verdict(
+        self, trust_boundary, general_message
+    ):
+        """Signing failures must not produce normal verdicts without attestations."""
+
+        class FailingCryptoService:
+            def sign_verdict(self, **_kwargs):
+                raise RuntimeError("signer unavailable")
+
+        interceptor = A2AVerificationInterceptor(
+            crypto_service=FailingCryptoService(),
+            trust_boundary=trust_boundary,
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to sign attestation"):
+            await interceptor.intercept(general_message, trace_id="t_gen_sign_fail")
+
     async def test_general_passthrough(self, interceptor, general_message):
         """General messages should pass through without verification."""
         verdict = await interceptor.intercept(general_message, trace_id="t_gen_pass")
