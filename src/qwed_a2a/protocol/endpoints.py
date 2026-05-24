@@ -34,7 +34,7 @@ def _load_trusted_agents(interceptor: A2AVerificationInterceptor) -> None:
                 logger.info("Trusted agent registered")
         logger.info(
             "Zero-trust boundary initialized with %d trusted agent(s)",
-            len([a.strip() for a in trusted_env.split(",") if a.strip()])
+            len([a.strip() for a in trusted_env.split(",") if a.strip()]),
         )
     else:
         logger.warning(
@@ -49,7 +49,7 @@ def get_interceptor() -> A2AVerificationInterceptor:
         if _interceptor is None:
             _interceptor = A2AVerificationInterceptor()
             _load_trusted_agents(_interceptor)
-            
+
     return _interceptor
 
 
@@ -57,10 +57,10 @@ def configure_interceptor(config: InterceptorConfig) -> None:
     """Reconfigure the interceptor at runtime (atomic swap)."""
     global _interceptor
     new_interceptor = A2AVerificationInterceptor(config=config)
-    
+
     # Reload trusted agents to maintain zero-trust allowlist
     _load_trusted_agents(new_interceptor)
-    
+
     with _interceptor_lock:
         _interceptor = new_interceptor
 

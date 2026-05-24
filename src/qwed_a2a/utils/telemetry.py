@@ -108,7 +108,9 @@ def init_telemetry(
     elif sentry_dsn and not HAS_SENTRY:
         logger.warning("Sentry DSN provided but sentry-sdk not installed. Skipping.")
 
-    logger.info("QWED A2A telemetry initialized (level=%s)", logging.getLevelName(log_level))
+    logger.info(
+        "QWED A2A telemetry initialized (level=%s)", logging.getLevelName(log_level)
+    )
 
 
 def record_intercept(
@@ -148,9 +150,7 @@ def trace_intercept(func: Callable) -> Callable:
         try:
             result = await func(*args, **kwargs)
             elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.debug(
-                "Exiting %s (%.2fms)", func.__name__, elapsed_ms
-            )
+            logger.debug("Exiting %s (%.2fms)", func.__name__, elapsed_ms)
             return result
 
         except Exception as exc:
