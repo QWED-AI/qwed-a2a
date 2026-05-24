@@ -12,6 +12,7 @@
   [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
   [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
   [![Tests](https://github.com/QWED-AI/qwed-a2a/actions/workflows/ci.yml/badge.svg)](https://github.com/QWED-AI/qwed-a2a/actions)
+  [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=QWED-AI_qwed-a2a&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=QWED-AI_qwed-a2a)
   [![GitHub stars](https://img.shields.io/github/stars/QWED-AI/qwed-a2a?style=social)](https://github.com/QWED-AI/qwed-a2a)
 
   <a href="https://www.nvidia.com/en-us/startups/"><img src="https://img.shields.io/badge/NVIDIA-Inception_Program-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA Inception Program" height="28"></a>
