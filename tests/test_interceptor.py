@@ -7,24 +7,37 @@ from decimal import Decimal
 import pytest
 
 from qwed_a2a.interceptor import A2AVerificationInterceptor
-from qwed_a2a.protocol.schema import InterceptorConfig, VerdictStatus
+from qwed_a2a.protocol.schema import (
+    AgentMessage,
+    InterceptorConfig,
+    PayloadType,
+    VerdictStatus,
+)
 
 
 @pytest.mark.asyncio
 class TestInterceptorFinancial:
     """Financial transaction verification tests."""
 
-    async def test_valid_financial_forwarded(self, interceptor, valid_financial_message):
+    async def test_valid_financial_forwarded(
+        self, interceptor, valid_financial_message
+    ):
         """Correct financial totals should be forwarded."""
-        verdict = await interceptor.intercept(valid_financial_message, trace_id="t_fin_valid")
+        verdict = await interceptor.intercept(
+            valid_financial_message, trace_id="t_fin_valid"
+        )
         assert verdict.status == VerdictStatus.FORWARDED
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is not None
         assert verdict.audit_trace_id == "t_fin_valid"
 
-    async def test_hallucinated_financial_blocked(self, interceptor, hallucinated_financial_message):
+    async def test_hallucinated_financial_blocked(
+        self, interceptor, hallucinated_financial_message
+    ):
         """Incorrect financial totals should be blocked."""
-        verdict = await interceptor.intercept(hallucinated_financial_message, trace_id="t_fin_bad")
+        verdict = await interceptor.intercept(
+            hallucinated_financial_message, trace_id="t_fin_bad"
+        )
         assert verdict.status == VerdictStatus.BLOCKED
         assert "hallucination" in verdict.reason.lower()
         assert verdict.engine_used == "finance_guard"
@@ -39,7 +52,9 @@ class TestInterceptorCode:
 
     async def test_dangerous_code_blocked(self, interceptor, dangerous_code_message):
         """Code with dangerous patterns should be blocked."""
-        verdict = await interceptor.intercept(dangerous_code_message, trace_id="t_code_bad")
+        verdict = await interceptor.intercept(
+            dangerous_code_message, trace_id="t_code_bad"
+        )
         assert verdict.status == VerdictStatus.BLOCKED
         assert "os.system" in verdict.reason
         assert verdict.engine_used == "code_guard"
@@ -55,9 +70,13 @@ class TestInterceptorCode:
 class TestInterceptorLogic:
     """Logic assertion verification tests."""
 
-    async def test_contradiction_blocked(self, interceptor, contradictory_logic_message):
+    async def test_contradiction_blocked(
+        self, interceptor, contradictory_logic_message
+    ):
         """Contradictory assertions should be blocked."""
-        verdict = await interceptor.intercept(contradictory_logic_message, trace_id="t_logic")
+        verdict = await interceptor.intercept(
+            contradictory_logic_message, trace_id="t_logic"
+        )
         assert verdict.status == VerdictStatus.BLOCKED
         assert "contradiction" in verdict.reason.lower()
         assert verdict.engine_used == "logic_guard"
@@ -75,9 +94,28 @@ class TestInterceptorGeneral:
             A2AVerificationInterceptor()
 
     async def test_attestation_signing_failure_is_not_returned_as_normal_verdict(
-        self, trust_boundary, general_message
+        self, trust_boundary
     ):
-        """Signing failures must not produce normal verdicts without attestations."""
+        """Signing failures on verified payloads must raise — no unsigned verdict emitted."""
+        from decimal import Decimal
+
+        financial_message = AgentMessage(
+            sender_agent_id="agent-a",
+            receiver_agent_id="agent-b",
+            payload_type=PayloadType.FINANCIAL_TRANSACTION,
+            payload={
+                "data": {
+                    "claimed_total": Decimal("50.00"),
+                    "line_items": [
+                        {
+                            "description": "Item",
+                            "amount": Decimal("50.00"),
+                            "quantity": 1,
+                        }
+                    ],
+                }
+            },
+        )
 
         class FailingCryptoService:
             def sign_verdict(self, **_kwargs):
@@ -89,12 +127,31 @@ class TestInterceptorGeneral:
         )
 
         with pytest.raises(RuntimeError, match="Failed to sign attestation"):
-            await interceptor.intercept(general_message, trace_id="t_gen_sign_fail")
+            await interceptor.intercept(financial_message, trace_id="t_fin_sign_fail")
 
     async def test_empty_attestation_is_not_returned_as_normal_verdict(
-        self, trust_boundary, general_message
+        self, trust_boundary
     ):
-        """Falsy attestation tokens must fail closed like signing errors."""
+        """Empty token from signer on verified payloads must fail closed."""
+        from decimal import Decimal
+
+        financial_message = AgentMessage(
+            sender_agent_id="agent-a",
+            receiver_agent_id="agent-b",
+            payload_type=PayloadType.FINANCIAL_TRANSACTION,
+            payload={
+                "data": {
+                    "claimed_total": Decimal("50.00"),
+                    "line_items": [
+                        {
+                            "description": "Item",
+                            "amount": Decimal("50.00"),
+                            "quantity": 1,
+                        }
+                    ],
+                }
+            },
+        )
 
         class EmptyTokenCryptoService:
             def sign_verdict(self, **_kwargs):
@@ -106,19 +163,21 @@ class TestInterceptorGeneral:
         )
 
         with pytest.raises(RuntimeError, match="sign_verdict returned an empty token"):
-            await interceptor.intercept(general_message, trace_id="t_gen_empty_token")
+            await interceptor.intercept(financial_message, trace_id="t_fin_empty_token")
 
     async def test_general_passthrough(self, interceptor, general_message):
-        """General messages should pass through without verification."""
+        """General messages route to passthrough and return UNVERIFIABLE — not FORWARDED."""
         verdict = await interceptor.intercept(general_message, trace_id="t_gen_pass")
-        assert verdict.status == VerdictStatus.FORWARDED
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "passthrough"
 
-    async def test_attestation_always_present(self, interceptor, general_message):
-        """Every verdict must have an attestation JWT."""
+    async def test_unverifiable_verdict_has_no_attestation_jwt(
+        self, interceptor, general_message
+    ):
+        """UNVERIFIABLE verdicts must not carry a JWT — issuing one would be a false claim."""
         verdict = await interceptor.intercept(general_message, trace_id="t_gen_attest")
-        assert verdict.attestation_jwt is not None
-        assert len(verdict.attestation_jwt) > 0
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.attestation_jwt is None
 
     async def test_deterministic_trace_id(self, interceptor, general_message):
         """Trace IDs are caller-driven and deterministic."""
@@ -139,20 +198,20 @@ class TestTrustBoundaryIntegration:
         assert verdict.status == VerdictStatus.BLOCKED
         assert "trust boundary" in verdict.reason.lower()
 
-    async def test_trusted_agent_no_longer_bypasses_verification(
+    async def test_trusted_agent_general_returns_unverifiable(
         self, crypto_service, trust_boundary, general_message
     ):
-        """Trusted agents should still route through verification engines."""
-        config = InterceptorConfig(
-            trusted_agents=[general_message.sender_agent_id]
-        )
+        """Trusted agents sending GENERAL payloads still get UNVERIFIABLE — no engine exists."""
+        config = InterceptorConfig(trusted_agents=[general_message.sender_agent_id])
         interceptor = A2AVerificationInterceptor(
             config=config,
             crypto_service=crypto_service,
             trust_boundary=trust_boundary,
         )
-        verdict = await interceptor.intercept(general_message, trace_id="t_trust_no_bypass")
-        assert verdict.status == VerdictStatus.FORWARDED
+        verdict = await interceptor.intercept(
+            general_message, trace_id="t_trust_no_bypass"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "passthrough"
 
     async def test_trusted_agent_financial_fraud_is_blocked(

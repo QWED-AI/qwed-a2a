@@ -174,9 +174,7 @@ class TestInterceptEndpoint:
 
     def test_malformed_body_returns_422(self, client, monkeypatch):
         monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
-        assert (
-            client.post("/a2a/intercept", json={"bad": "data"}).status_code == 422
-        )
+        assert client.post("/a2a/intercept", json={"bad": "data"}).status_code == 422
 
     def test_runtime_error_returns_503(self, client, general_payload, monkeypatch):
         monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)

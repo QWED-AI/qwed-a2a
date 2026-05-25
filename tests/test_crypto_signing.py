@@ -2,8 +2,6 @@
 Tests for A2A cryptographic signing and verification.
 """
 
-import pytest
-
 from qwed_a2a.security.crypto import A2ACryptoService
 
 

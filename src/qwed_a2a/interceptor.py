@@ -119,7 +119,16 @@ class A2AVerificationInterceptor:
             return verdict
 
         # --- Step 4: Build verdict from engine result ---
-        if engine_result["verified"]:
+        if engine_result.get("status") == "unverifiable":
+            verdict = self._build_verdict(
+                trace_id=trace_id,
+                status=VerdictStatus.UNVERIFIABLE,
+                reason=engine_result.get("reason"),
+                engine=engine_result["engine"],
+                message=message,
+                details=engine_result,
+            )
+        elif engine_result["verified"]:
             verdict = self._build_verdict(
                 trace_id=trace_id,
                 status=VerdictStatus.FORWARDED,
@@ -172,11 +181,14 @@ class A2AVerificationInterceptor:
         ):
             return self._verify_code(payload)
 
-        # General or unrecognized types — pass through
+        # GENERAL and DATA_QUERY have no verification engine.
+        # Returning verified=False with status=unverifiable ensures no
+        # JWT is issued claiming the content was checked.
         return {
-            "verified": True,
+            "verified": False,
             "engine": "passthrough",
-            "reason": "No verification required for this payload type",
+            "status": "unverifiable",
+            "reason": "No verification engine available for this payload type",
         }
 
     def _verify_financial(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -339,29 +351,36 @@ class A2AVerificationInterceptor:
         message: AgentMessage,
         details: Optional[Dict[str, Any]] = None,
     ) -> VerificationVerdict:
-        """Build a VerificationVerdict with a required JWT attestation."""
-        try:
-            payload_hash = A2ACryptoService.hash_content(
-                json.dumps(message.payload, sort_keys=True, default=str)
-            )
-            attestation_jwt = self.crypto.sign_verdict(
-                trace_id=trace_id,
-                verdict_status=status.value,
-                engine=engine,
-                sender_id=message.sender_agent_id,
-                receiver_id=message.receiver_agent_id,
-                payload_hash=payload_hash,
-            )
-        except Exception as exc:
-            logger.error("Failed to sign attestation: %s", exc)
-            raise RuntimeError(
-                "Failed to sign attestation; refusing to return an unsigned verdict"
-            ) from exc
+        """Build a VerificationVerdict, signing with JWT unless status is UNVERIFIABLE.
 
-        if not attestation_jwt:
-            raise RuntimeError(
-                "sign_verdict returned an empty token — refusing to emit unsigned verdict"
-            )
+        UNVERIFIABLE verdicts intentionally carry no attestation — issuing a
+        signed JWT for unverified content would be a false cryptographic claim.
+        """
+        attestation_jwt = None
+
+        if status != VerdictStatus.UNVERIFIABLE:
+            try:
+                payload_hash = A2ACryptoService.hash_content(
+                    json.dumps(message.payload, sort_keys=True, default=str)
+                )
+                attestation_jwt = self.crypto.sign_verdict(
+                    trace_id=trace_id,
+                    verdict_status=status.value,
+                    engine=engine,
+                    sender_id=message.sender_agent_id,
+                    receiver_id=message.receiver_agent_id,
+                    payload_hash=payload_hash,
+                )
+            except Exception as exc:
+                logger.error("Failed to sign attestation: %s", exc)
+                raise RuntimeError(
+                    "Failed to sign attestation; refusing to return an unsigned verdict"
+                ) from exc
+
+            if not attestation_jwt:
+                raise RuntimeError(
+                    "sign_verdict returned an empty token — refusing to emit unsigned verdict"
+                )
 
         return VerificationVerdict(
             status=status,
