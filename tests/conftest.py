@@ -54,8 +54,16 @@ def valid_financial_message():
             "data": {
                 "claimed_total": Decimal("150.00"),
                 "line_items": [
-                    {"description": "Widget A", "amount": Decimal("50.00"), "quantity": 2},
-                    {"description": "Widget B", "amount": Decimal("25.00"), "quantity": 2},
+                    {
+                        "description": "Widget A",
+                        "amount": Decimal("50.00"),
+                        "quantity": 2,
+                    },
+                    {
+                        "description": "Widget B",
+                        "amount": Decimal("25.00"),
+                        "quantity": 2,
+                    },
                 ],
             }
         },
@@ -73,8 +81,16 @@ def hallucinated_financial_message():
             "data": {
                 "claimed_total": Decimal("999.99"),
                 "line_items": [
-                    {"description": "Product X", "amount": Decimal("100.00"), "quantity": 1},
-                    {"description": "Product Y", "amount": Decimal("50.00"), "quantity": 1},
+                    {
+                        "description": "Product X",
+                        "amount": Decimal("100.00"),
+                        "quantity": 1,
+                    },
+                    {
+                        "description": "Product Y",
+                        "amount": Decimal("50.00"),
+                        "quantity": 1,
+                    },
                 ],
             }
         },

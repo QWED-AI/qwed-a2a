@@ -27,6 +27,7 @@ class VerdictStatus(str, Enum):
 
     FORWARDED = "forwarded"
     BLOCKED = "blocked"
+    UNVERIFIABLE = "unverifiable"
     ERROR = "error"
 
 
