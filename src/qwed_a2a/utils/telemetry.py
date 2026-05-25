@@ -31,6 +31,7 @@ class InterceptMetrics:
     total_intercepts: int = 0
     total_forwarded: int = 0
     total_blocked: int = 0
+    total_unverifiable: int = 0
     total_errors: int = 0
     total_latency_ms: float = 0.0
     by_engine: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
@@ -53,6 +54,7 @@ class InterceptMetrics:
             "total_intercepts": self.total_intercepts,
             "total_forwarded": self.total_forwarded,
             "total_blocked": self.total_blocked,
+            "total_unverifiable": self.total_unverifiable,
             "total_errors": self.total_errors,
             "average_latency_ms": round(self.average_latency_ms, 2),
             "block_rate": round(self.block_rate, 4),
@@ -129,6 +131,8 @@ def record_intercept(
         metrics.total_forwarded += 1
     elif status == "blocked":
         metrics.total_blocked += 1
+    elif status == "unverifiable":
+        metrics.total_unverifiable += 1
     else:
         metrics.total_errors += 1
 

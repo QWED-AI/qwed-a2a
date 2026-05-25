@@ -71,6 +71,8 @@ class TestUnverifiablePassthrough:
             f"Expected UNVERIFIABLE, got {verdict.status}. "
             "DATA_QUERY payloads must not be falsely endorsed as verified."
         )
+        assert verdict.reason is not None
+        assert len(verdict.reason) > 0
 
     @pytest.mark.asyncio
     async def test_general_has_no_attestation_jwt(
