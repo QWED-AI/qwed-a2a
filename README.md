@@ -248,9 +248,12 @@ Every verdict includes a signed **ES256 JWT attestation**:
 | **Expiry** | 24 hours default |
 | **Cross-service** | Each instance has its own key pair |
 
-### Graceful Degradation
+### Fail-Closed Attestations
 
-If `cryptography` and `PyJWT` are not installed, the interceptor operates **without attestations**. Verdicts are still generated, but `attestation_jwt` will be `None`.
+`cryptography` and `PyJWT` are required dependencies. If they are unavailable,
+the interceptor raises at startup instead of returning unsigned verdicts. Signing
+failures also fail closed so `attestation_jwt=None` is never emitted as a normal
+verdict.
 
 ---
 
