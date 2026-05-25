@@ -235,7 +235,10 @@ class A2ACryptoService:
         1. Cryptographic signature check (ES256 / ECDSA P-256)
         2. Expiry check (exp claim)
         3. Required claims check (iss, sub, iat, exp, jti)
-        4. jti replay check — rejects previously seen jti values
+        4. Deployment context check — deployment_id in claims must match
+           this service's deployment_id (prevents cross-deployment replay
+           in shared-key environments)
+        5. jti replay check — rejects previously seen jti values
 
         Returns:
             Tuple of (is_valid, decoded_claims, error_message).
@@ -254,8 +257,21 @@ class A2ACryptoService:
         except jwt.InvalidTokenError as exc:
             return False, None, f"Invalid token: {exc}"
 
-        # Step 4: replay check — must happen AFTER signature/expiry validation
-        # so we don't pollute the registry with invalid tokens.
+        # Step 4: deployment context check — runs after signature validation
+        # so we only inspect claims from cryptographically sound tokens.
+        # This blocks cross-deployment replay in environments where signing
+        # keys are shared across multiple QWED-A2A deployments.
+        qwed_claims = claims.get("qwed_a2a", {})
+        token_deployment_id = qwed_claims.get("deployment_id")
+        if token_deployment_id != _DEPLOYMENT_ID:
+            return (
+                False,
+                None,
+                "Deployment context mismatch: token not issued by this deployment",
+            )
+
+        # Step 5: replay check — must happen AFTER all other validation
+        # so we don't pollute the registry with otherwise-invalid tokens.
         jti = claims.get("jti")
         if not jti:
             return False, None, "Missing jti claim"

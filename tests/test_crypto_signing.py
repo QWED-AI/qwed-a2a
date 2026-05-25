@@ -120,12 +120,19 @@ class TestJtiRegistry:
         assert len(registry) == 1
 
     def test_thread_safety(self):
-        """Concurrent registrations must not cause races or double-accepts."""
+        """Concurrent registrations must not cause races or double-accepts.
+
+        threading.Barrier ensures all 20 threads are blocked at the gate
+        before any one of them calls check_and_register — this maximises
+        contention and exercises the lock under genuine concurrency.
+        """
         registry = JtiRegistry(ttl_seconds=300)
         results = []
         lock = threading.Lock()
+        barrier = threading.Barrier(20)
 
         def register():
+            barrier.wait()  # hold until all threads are ready
             result = registry.check_and_register("shared-jti")
             with lock:
                 results.append(result)
@@ -362,4 +369,117 @@ class TestReplayPrevention:
 
         size_before = len(verifier._jti_registry)
         verifier.verify_attestation(tampered)
+        assert len(verifier._jti_registry) == size_before
+
+
+# ─── Deployment context validation (Codex P1) ─────────────────────────────────────────
+
+
+class TestDeploymentContextValidation:
+    """
+    verify_attestation() must enforce deployment_id to close the cross-deployment
+    replay vector in shared-key environments.
+
+    Architecture note: _DEPLOYMENT_ID is a module-level constant — stable for
+    the lifetime of the Python process. All A2ACryptoService instances in the
+    same process share one deployment_id, so legitimate same-deployment
+    verification always succeeds. Different deployments (different processes)
+    produce different deployment_ids.
+    """
+
+    def test_valid_token_passes_deployment_check(self, crypto_service, verifier):
+        """Tokens issued in the same deployment must pass deployment_id check."""
+        token = _sign(crypto_service, trace_id="t_deploy_ok")
+        is_valid, claims, error = verifier.verify_attestation(token)
+        assert is_valid is True, f"Unexpected failure: {error}"
+
+    def test_cross_deployment_token_rejected(self):
+        """
+        A token whose deployment_id does not match the verifier's deployment_id
+        must be rejected — even if the cryptographic signature is valid.
+
+        We simulate a different deployment by patching _DEPLOYMENT_ID in the
+        crypto module so that the issuer embeds a foreign deployment_id.
+        """
+        from unittest.mock import patch
+        import qwed_a2a.security.crypto as crypto_module
+
+        issuer = A2ACryptoService(issuer_id="did:qwed:a2a:test")
+
+        # Patch the module-level _DEPLOYMENT_ID seen by sign_verdict()
+        # so the token is stamped with a deployment that does not match
+        # the current runtime.
+        with patch.object(crypto_module, "_DEPLOYMENT_ID", "foreign-deployment-xyz"):
+            token = _sign(issuer, trace_id="t_cross_deploy")
+
+        # Now verify with a service that sees the REAL _DEPLOYMENT_ID
+        verifier = A2ACryptoService.__new__(A2ACryptoService)
+        verifier.issuer_id = issuer.issuer_id
+        verifier.validity_seconds = issuer.validity_seconds
+        issuer._ensure_key_pair()
+        verifier._key_pair = issuer._key_pair
+        verifier._jti_registry = JtiRegistry(ttl_seconds=300)
+
+        is_valid, claims, error = verifier.verify_attestation(token)
+        assert is_valid is False
+        assert claims is None
+        assert "Deployment context mismatch" in error
+
+    def test_missing_deployment_id_rejected(self, crypto_service):
+        """
+        A token with no deployment_id in qwed_a2a claims must be rejected.
+        This guards against older tokens (pre-fix) being replayed post-upgrade.
+        """
+        import jwt as pyjwt
+
+        # Sign a normal token then strip deployment_id from raw payload
+        token = _sign(crypto_service, trace_id="t_no_deploy")
+        key_pair = crypto_service._ensure_key_pair()
+
+        raw = pyjwt.decode(token, options={"verify_signature": False})
+        # Remove deployment_id from qwed_a2a claims block
+        raw["qwed_a2a"].pop("deployment_id", None)
+
+        # Re-sign with same key so signature is valid
+        patched_token = pyjwt.encode(
+            raw,
+            key_pair.private_key_pem,
+            algorithm=A2ACryptoService.ALGORITHM,
+        )
+
+        verifier = A2ACryptoService.__new__(A2ACryptoService)
+        verifier.issuer_id = crypto_service.issuer_id
+        verifier.validity_seconds = crypto_service.validity_seconds
+        verifier._key_pair = key_pair
+        verifier._jti_registry = JtiRegistry(ttl_seconds=300)
+
+        is_valid, _, error = verifier.verify_attestation(patched_token)
+        assert is_valid is False
+        assert "Deployment context mismatch" in error
+
+    def test_deployment_id_check_runs_before_jti_check(self):
+        """
+        Deployment context validation runs before jti replay check.
+        A cross-deployment token must not register its jti in the verifier's
+        registry — otherwise an attacker could pre-burn legitimate jti values.
+        """
+        from unittest.mock import patch
+        import qwed_a2a.security.crypto as crypto_module
+
+        issuer = A2ACryptoService(issuer_id="did:qwed:a2a:test")
+
+        with patch.object(crypto_module, "_DEPLOYMENT_ID", "foreign-deployment-abc"):
+            token = _sign(issuer, trace_id="t_order_deploy")
+
+        verifier = A2ACryptoService.__new__(A2ACryptoService)
+        verifier.issuer_id = issuer.issuer_id
+        verifier.validity_seconds = issuer.validity_seconds
+        issuer._ensure_key_pair()
+        verifier._key_pair = issuer._key_pair
+        verifier._jti_registry = JtiRegistry(ttl_seconds=300)
+
+        size_before = len(verifier._jti_registry)
+        verifier.verify_attestation(token)
+        # Registry must not have grown — cross-deployment token was rejected
+        # before the jti check ran
         assert len(verifier._jti_registry) == size_before
