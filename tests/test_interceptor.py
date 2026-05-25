@@ -91,6 +91,23 @@ class TestInterceptorGeneral:
         with pytest.raises(RuntimeError, match="Failed to sign attestation"):
             await interceptor.intercept(general_message, trace_id="t_gen_sign_fail")
 
+    async def test_empty_attestation_is_not_returned_as_normal_verdict(
+        self, trust_boundary, general_message
+    ):
+        """Falsy attestation tokens must fail closed like signing errors."""
+
+        class EmptyTokenCryptoService:
+            def sign_verdict(self, **_kwargs):
+                return None
+
+        interceptor = A2AVerificationInterceptor(
+            crypto_service=EmptyTokenCryptoService(),
+            trust_boundary=trust_boundary,
+        )
+
+        with pytest.raises(RuntimeError, match="sign_verdict returned an empty token"):
+            await interceptor.intercept(general_message, trace_id="t_gen_empty_token")
+
     async def test_general_passthrough(self, interceptor, general_message):
         """General messages should pass through without verification."""
         verdict = await interceptor.intercept(general_message, trace_id="t_gen_pass")

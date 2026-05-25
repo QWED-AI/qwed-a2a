@@ -366,6 +366,11 @@ class A2AVerificationInterceptor:
                 "Failed to sign attestation; refusing to return an unsigned verdict"
             ) from exc
 
+        if not attestation_jwt:
+            raise RuntimeError(
+                "sign_verdict returned an empty token — refusing to emit unsigned verdict"
+            )
+
         return VerificationVerdict(
             status=status,
             reason=reason,
