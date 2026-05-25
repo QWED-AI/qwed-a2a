@@ -1,20 +1,25 @@
 """
-QWED A2A Cryptographic Signing & Verification.
+QWED A2A Cryptographic Services.
 
-Implements JWT (ES256) attestations for inter-agent payload integrity.
-Mirrors the AttestationService pattern from qwed-verification/core/attestation.py.
+Provides ECDSA P-256 JWT attestation signing and verification with:
+- Short-lived tokens (5-minute validity — one A2A hop lifetime)
+- Thread-safe jti replay prevention registry
+- Session and deployment context binding
 """
 
 import hashlib
+import os
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 try:
     import jwt
+    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.hazmat.backends import default_backend
 
     HAS_CRYPTO = True
 except ImportError:
@@ -55,13 +60,72 @@ class KeyPair:
         )
 
 
+class JtiRegistry:
+    """
+    Thread-safe, TTL-based jti (JWT ID) replay-prevention registry.
+
+    RFC 7519 §4.1.7 requires implementations to reject tokens whose jti
+    has already been seen. This registry tracks issued jti values and
+    evicts entries after their TTL to bound memory growth.
+
+    The TTL mirrors the JWT validity window — a jti only needs to be
+    remembered for as long as the token it belongs to could still be valid.
+    """
+
+    def __init__(self, ttl_seconds: int = 300) -> None:
+        # OrderedDict preserves insertion order — oldest entry is first,
+        # which makes O(1) eviction possible without a heap.
+        self._seen: OrderedDict[str, float] = OrderedDict()
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+
+    def check_and_register(self, jti: str, now: Optional[float] = None) -> bool:
+        """
+        Return True and register jti if it has never been seen.
+        Return False (without registering) if jti is already in the registry.
+
+        Args:
+            jti: The JWT ID to check.
+            now: Current epoch time (injectable for testing). Defaults to time.time().
+        """
+        if now is None:
+            now = time.time()
+
+        with self._lock:
+            self._evict(now)
+            if jti in self._seen:
+                return False
+            self._seen[jti] = now
+            return True
+
+    def _evict(self, now: float) -> None:
+        """Remove entries older than TTL. Runs in O(k) where k = expired entries."""
+        while self._seen:
+            oldest_jti, timestamp = next(iter(self._seen.items()))
+            if now - timestamp > self._ttl:
+                self._seen.popitem(last=False)
+            else:
+                break
+
+    def __len__(self) -> int:
+        """Return the number of currently registered jti values."""
+        with self._lock:
+            return len(self._seen)
+
+
+# Module-level deployment ID — stable for the lifetime of the process.
+# Binds all JWTs issued by this instance to this deployment context.
+_DEPLOYMENT_ID: str = f"qwed-a2a-{os.getpid()}-{os.urandom(4).hex()}"
+
+
 class A2ACryptoService:
     """
     Handles cryptographic signing and verification for A2A payloads.
 
-    - Signs verification verdicts with ES256 JWT attestations.
+    - Signs verification verdicts with short-lived ES256 JWT attestations.
     - Verifies incoming agent message signatures.
     - Manages ECDSA P-256 key pairs.
+    - Enforces jti replay prevention via JtiRegistry.
     """
 
     ALGORITHM = "ES256"
@@ -70,11 +134,15 @@ class A2ACryptoService:
     def __init__(
         self,
         issuer_id: str = "did:qwed:a2a:local",
-        validity_seconds: int = 86400,
+        validity_seconds: int = 300,
     ):
         self.issuer_id = issuer_id
         self.validity_seconds = validity_seconds
         self._key_pair: Optional[KeyPair] = None
+        # Each service instance owns its replay registry.
+        # TTL is aligned with the validity window so entries are never
+        # held longer than the tokens they protect against.
+        self._jti_registry = JtiRegistry(ttl_seconds=validity_seconds)
 
     def _ensure_key_pair(self) -> KeyPair:
         if self._key_pair is None:
@@ -95,12 +163,28 @@ class A2ACryptoService:
         sender_id: str,
         receiver_id: str,
         payload_hash: str,
+        session_id: Optional[str] = None,
     ) -> str:
         """
         Create a signed JWT attestation for a verification verdict.
 
+        The issued token is:
+        - Valid for validity_seconds (default 300s / 5 minutes)
+        - Bound to the current deployment instance via deployment_id
+        - Bound to the caller-supplied session_id when provided
+        - Registered in the jti replay registry immediately upon signing
+
+        Args:
+            trace_id:       Unique trace ID (becomes jti).
+            verdict_status: Verdict outcome string (forwarded/blocked/unverifiable).
+            engine:         Verification engine name.
+            sender_id:      Sending agent identifier.
+            receiver_id:    Receiving agent identifier.
+            payload_hash:   SHA-256 hash of the verified payload.
+            session_id:     Optional caller-supplied session identifier.
+
         Returns:
-            JWT token string.
+            Signed JWT token string.
         """
         key_pair = self._ensure_key_pair()
         now = int(time.time())
@@ -117,6 +201,8 @@ class A2ACryptoService:
                 "engine": engine,
                 "sender": sender_id,
                 "receiver": receiver_id,
+                "deployment_id": _DEPLOYMENT_ID,
+                "session_id": session_id,
             },
         }
 
@@ -126,18 +212,30 @@ class A2ACryptoService:
             "kid": key_pair.key_id,
         }
 
-        return jwt.encode(
+        token = jwt.encode(
             payload,
             key_pair.private_key_pem,
             algorithm=self.ALGORITHM,
             headers=header,
         )
 
+        # Register jti immediately after signing so the issuing service
+        # itself rejects replay of tokens it has issued.
+        self._jti_registry.check_and_register(trace_id)
+
+        return token
+
     def verify_attestation(
         self, token: str
     ) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
         """
         Verify a JWT attestation token.
+
+        Verification steps (all must pass):
+        1. Cryptographic signature check (ES256 / ECDSA P-256)
+        2. Expiry check (exp claim)
+        3. Required claims check (iss, sub, iat, exp, jti)
+        4. jti replay check — rejects previously seen jti values
 
         Returns:
             Tuple of (is_valid, decoded_claims, error_message).
@@ -151,9 +249,18 @@ class A2ACryptoService:
                 algorithms=[self.ALGORITHM],
                 options={"require": ["iss", "sub", "iat", "exp", "jti"]},
             )
-            return True, claims, None
-
         except jwt.ExpiredSignatureError:
             return False, None, "Attestation has expired"
-        except jwt.InvalidTokenError as e:
-            return False, None, f"Invalid token: {e}"
+        except jwt.InvalidTokenError as exc:
+            return False, None, f"Invalid token: {exc}"
+
+        # Step 4: replay check — must happen AFTER signature/expiry validation
+        # so we don't pollute the registry with invalid tokens.
+        jti = claims.get("jti")
+        if not jti:
+            return False, None, "Missing jti claim"
+
+        if not self._jti_registry.check_and_register(jti):
+            return False, None, "Replay detected: jti already seen"
+
+        return True, claims, None
