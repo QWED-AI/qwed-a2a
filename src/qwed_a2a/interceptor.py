@@ -7,6 +7,7 @@ payloads sent between autonomous agents using the A2A protocol.
 This is the [QWED Core] module — all inter-agent messages flow through here.
 """
 
+import ast
 import json
 import re
 import time
@@ -123,6 +124,15 @@ class A2AVerificationInterceptor:
             verdict = self._build_verdict(
                 trace_id=trace_id,
                 status=VerdictStatus.UNVERIFIABLE,
+                reason=engine_result.get("reason"),
+                engine=engine_result["engine"],
+                message=message,
+                details=engine_result,
+            )
+        elif engine_result.get("status") == "heuristic_pass":
+            verdict = self._build_verdict(
+                trace_id=trace_id,
+                status=VerdictStatus.HEURISTIC_PASS,
                 reason=engine_result.get("reason"),
                 engine=engine_result["engine"],
                 message=message,
@@ -290,56 +300,161 @@ class A2AVerificationInterceptor:
             "reason": "No contradictions found in assertions",
         }
 
-    # Compiled regex patterns for case-insensitive, whitespace-tolerant detection
+    # ── AST dangerous node types ─────────────────────────────────────────────
+    # Used by _verify_code_ast() for structural (not textual) analysis.
+    # These are deterministic: if the AST contains one of these constructs
+    # the payload is blocked regardless of how obfuscated the source is.
+    _DANGEROUS_CALL_NAMES: frozenset = frozenset(
+        {
+            "eval",
+            "exec",
+            "compile",
+            "__import__",
+        }
+    )
+    _DANGEROUS_ATTR_CALLS: frozenset = frozenset(
+        {
+            "system",
+            "popen",
+            "run",
+            "Popen",
+            "call",
+            "check_output",
+            "check_call",
+        }
+    )
+    # Dangerous module import names (caught at ast.Import / ast.ImportFrom level)
+    _DANGEROUS_IMPORTS: frozenset = frozenset(
+        {
+            "subprocess",
+            "importlib",
+            "ctypes",
+            "pty",
+        }
+    )
+
+    # ── Regex patterns as secondary heuristic layer ───────────────────────────
+    # Catch obfuscation patterns that survive AST parsing: encoded strings,
+    # getattr-based lookups, and dynamic attribute construction.
     _DANGEROUS_PATTERNS: Dict[str, re.Pattern] = {
-        "eval": re.compile(r"\beval\s*\(", re.IGNORECASE),
-        "exec": re.compile(r"\bexec\s*\(", re.IGNORECASE),
-        "subprocess": re.compile(
-            r"\b(?:subprocess\s*\.|import\s+subprocess\b|from\s+subprocess\s+import\b)",
-            re.IGNORECASE,
+        "getattr_builtin": re.compile(
+            r"""getattr\s*\(\s*(?:__builtins__|builtins)\s*""", re.IGNORECASE
         ),
-        "os.system": re.compile(r"\bos\.system\s*\(", re.IGNORECASE),
-        "os.popen": re.compile(r"\bos\.popen\s*\(", re.IGNORECASE),
-        "__import__": re.compile(r"__import__\s*\(", re.IGNORECASE),
-        "compile": re.compile(r"\bcompile\s*\(", re.IGNORECASE),
-        "importlib": re.compile(r"\bimportlib\s*\.", re.IGNORECASE),
+        "builtins_dict_access": re.compile(
+            r"""__builtins__\s*\.\s*__dict__\s*\[""", re.IGNORECASE
+        ),
+        "base64_exec": re.compile(
+            r"""(?:base64\s*\.\s*b64decode|b64decode)\s*\(""", re.IGNORECASE
+        ),
+        "dynamic_import": re.compile(r"""__import__\s*\(""", re.IGNORECASE),
+        "os_system": re.compile(r"""\bos\.system\s*\(""", re.IGNORECASE),
+        "os_popen": re.compile(r"""\bos\.popen\s*\(""", re.IGNORECASE),
     }
 
     def _verify_code(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Lightweight code security verification.
+        Heuristic code security scan: AST structural analysis + regex patterns.
 
-        Scans for dangerous patterns using case-insensitive regex
-        to prevent trivial bypass via casing or whitespace.
+        Important: this is a heuristic scan, NOT deterministic verification.
+        A HEURISTIC_PASS result means no known dangerous constructs were found —
+        it does NOT mean the code is safe. Obfuscated or novel attack patterns
+        may not be detected.
+
+        Analysis layers (run in order):
+          1. AST parse — catches direct dangerous calls and imports
+             structurally, before any text-level obfuscation can hide them
+          2. Regex scan — secondary heuristic for dynamic access patterns
+             (getattr(__builtins__,...), base64-encoded payloads, etc.)
+
+        Returns HEURISTIC_PASS when no threats found, BLOCKED when any found.
         """
         code = payload.get("code", "")
 
         if not code:
             return {
-                "verified": True,
+                "verified": False,
+                "status": "heuristic_pass",
                 "engine": "code_guard",
-                "reason": "No code to verify",
+                "reason": "No code to analyze",
             }
 
-        found_threats = []
-        for label, pattern in self._DANGEROUS_PATTERNS.items():
-            if pattern.search(code):
-                found_threats.append(label)
+        # ── Layer 1: AST structural analysis ──────────────────────────────────
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as exc:
+            # Unparseable code could indicate obfuscation or raw bytecode;
+            # fail closed — do not forward what we cannot analyse.
+            return {
+                "verified": False,
+                "engine": "code_guard",
+                "reason": f"Code failed AST parsing — cannot verify: {exc}",
+            }
 
-        if found_threats:
+        ast_threats: list = []
+        for node in ast.walk(tree):
+            # Direct dangerous function calls: eval(...), exec(...), compile(...)
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id in self._DANGEROUS_CALL_NAMES:
+                    ast_threats.append(f"call:{func.id}()")
+                # Attribute calls: os.system(...), subprocess.run(...), etc.
+                elif isinstance(func, ast.Attribute):
+                    if func.attr in self._DANGEROUS_ATTR_CALLS:
+                        ast_threats.append(f"attr:.{func.attr}()")
+
+            # Dangerous imports: import subprocess, from ctypes import ...
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    if root in self._DANGEROUS_IMPORTS:
+                        ast_threats.append(f"import:{root}")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    root = node.module.split(".")[0]
+                    if root in self._DANGEROUS_IMPORTS:
+                        ast_threats.append(f"import:{root}")
+
+        if ast_threats:
             return {
                 "verified": False,
                 "engine": "code_guard",
                 "reason": (
-                    f"Dangerous code patterns detected: {', '.join(found_threats)}"
+                    f"Dangerous constructs detected via AST analysis: "
+                    f"{', '.join(ast_threats)}"
                 ),
-                "threats": found_threats,
+                "threats": ast_threats,
+                "analysis": "ast",
             }
 
+        # ── Layer 2: Regex heuristic scan ─────────────────────────────────────
+        regex_threats: list = []
+        for label, pattern in self._DANGEROUS_PATTERNS.items():
+            if pattern.search(code):
+                regex_threats.append(label)
+
+        if regex_threats:
+            return {
+                "verified": False,
+                "engine": "code_guard",
+                "reason": (
+                    f"Suspicious patterns detected via heuristic scan: "
+                    f"{', '.join(regex_threats)}"
+                ),
+                "threats": regex_threats,
+                "analysis": "regex",
+            }
+
+        # ── Both layers clean — heuristic pass, not verified ──────────────────
         return {
-            "verified": True,
+            "verified": False,
+            "status": "heuristic_pass",
             "engine": "code_guard",
-            "reason": "No dangerous patterns found in code",
+            "reason": (
+                "AST analysis and heuristic scan found no known dangerous constructs. "
+                "This is a heuristic result — novel or deeply obfuscated attack "
+                "patterns may not be detected."
+            ),
+            "analysis": "ast+regex",
         }
 
     def _build_verdict(
@@ -358,6 +473,11 @@ class A2AVerificationInterceptor:
         """
         attestation_jwt = None
 
+        # UNVERIFIABLE — no JWT (no verification ran, issuing one would be false)
+        # All other statuses (FORWARDED, BLOCKED, HEURISTIC_PASS) get signed JWTs.
+        # HEURISTIC_PASS JWTs declare verdict_status="heuristic_pass" in their
+        # claims so downstream consumers know they received a heuristic result,
+        # not a deterministic verification proof.
         if status != VerdictStatus.UNVERIFIABLE:
             try:
                 payload_hash = A2ACryptoService.hash_content(
