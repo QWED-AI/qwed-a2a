@@ -113,9 +113,17 @@ class JtiRegistry:
             return len(self._seen)
 
 
-# Module-level deployment ID — stable for the lifetime of the process.
-# Binds all JWTs issued by this instance to this deployment context.
-_DEPLOYMENT_ID: str = f"qwed-a2a-{os.getpid()}-{os.urandom(4).hex()}"
+# Module-level deployment ID — shared across all processes in the same
+# logical deployment. Set QWED_A2A_DEPLOYMENT_ID in the environment so
+# that the signing service and the verifying service see the same value.
+#
+# Without the env var, each process gets a random ID — suitable for
+# single-process testing but unusable for cross-process verification.
+# In production this MUST be set explicitly.
+_DEPLOYMENT_ID: str = os.environ.get(
+    "QWED_A2A_DEPLOYMENT_ID",
+    f"qwed-a2a-{os.urandom(8).hex()}",  # random fallback — not pid-tied
+)
 
 
 class A2ACryptoService:
