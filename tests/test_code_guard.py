@@ -105,6 +105,34 @@ class TestCleanCodeReturnsHeuristicPass:
         assert verdict.attestation_jwt is not None
 
     @pytest.mark.asyncio
+    async def test_thread_run_not_blocked(self, code_interceptor):
+        """thread.run() must not be blocked -- receiver is not subprocess/os."""
+        code = "import threading\nt = threading.Thread(target=lambda: None)\nt.start()"
+        msg = _code_message(code)
+        verdict = await code_interceptor.intercept(msg, trace_id="t_thread_run")
+        assert (
+            verdict.status == VerdictStatus.HEURISTIC_PASS
+        ), f"threading.Thread.start() incorrectly blocked. Reason: {verdict.reason}"
+
+    @pytest.mark.asyncio
+    async def test_arbitrary_run_method_not_blocked(self, code_interceptor):
+        """job.run() on arbitrary objects must not be blocked -- no dangerous receiver."""
+        code = "class Job:\n    def run(self): return 42\njob = Job()\njob.run()"
+        msg = _code_message(code)
+        verdict = await code_interceptor.intercept(msg, trace_id="t_job_run")
+        assert (
+            verdict.status == VerdictStatus.HEURISTIC_PASS
+        ), f"job.run() incorrectly blocked. Reason: {verdict.reason}"
+
+    @pytest.mark.asyncio
+    async def test_subprocess_run_still_blocked(self, code_interceptor):
+        """subprocess.run() must still be blocked -- correct receiver+method pair."""
+        code = 'import subprocess\nsubprocess.run(["id"])'
+        msg = _code_message(code)
+        verdict = await code_interceptor.intercept(msg, trace_id="t_subprocess_run_fp")
+        assert verdict.status == VerdictStatus.BLOCKED
+
+    @pytest.mark.asyncio
     async def test_heuristic_pass_jwt_declares_correct_verdict(self, code_interceptor):
         """The JWT verdict claim must be 'heuristic_pass', not 'forwarded'."""
         import jwt as pyjwt
@@ -112,6 +140,8 @@ class TestCleanCodeReturnsHeuristicPass:
         msg = _code_message("x = 42")
         verdict = await code_interceptor.intercept(msg, trace_id="t_jwt_claim")
         assert verdict.attestation_jwt is not None
+        header = pyjwt.get_unverified_header(verdict.attestation_jwt)
+        assert header["alg"] in {"ES256", "ES384", "ES512"}
         raw = pyjwt.decode(verdict.attestation_jwt, options={"verify_signature": False})
         assert raw["qwed_a2a"]["verdict"] == "heuristic_pass"
         assert raw["qwed_a2a"]["engine"] == "code_guard"
@@ -310,17 +340,24 @@ class TestHeuristicPassTelemetry:
     async def test_heuristic_pass_increments_counter(self, code_interceptor):
         from qwed_a2a.utils.telemetry import get_metrics
 
+        before = get_metrics()
+        before_hp = before.total_heuristic_pass
+        before_errors = before.total_errors
+
         msg = _code_message("x = 1")
         await code_interceptor.intercept(msg, trace_id="t_telemetry_hp")
-        metrics = get_metrics()
-        assert metrics.total_heuristic_pass >= 1
-        assert metrics.total_errors == 0
+
+        after = get_metrics()
+        assert after.total_heuristic_pass >= before_hp + 1
+        assert after.total_errors == before_errors
 
     @pytest.mark.asyncio
     async def test_heuristic_pass_not_counted_as_error(self, code_interceptor):
         from qwed_a2a.utils.telemetry import get_metrics
 
+        before_errors = get_metrics().total_errors
+
         msg = _code_message("y = 2 + 2")
         await code_interceptor.intercept(msg, trace_id="t_telemetry_no_err")
-        metrics = get_metrics()
-        assert metrics.total_errors == 0
+
+        assert get_metrics().total_errors == before_errors

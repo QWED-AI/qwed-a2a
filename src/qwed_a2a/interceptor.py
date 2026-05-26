@@ -312,17 +312,20 @@ class A2AVerificationInterceptor:
             "__import__",
         }
     )
-    _DANGEROUS_ATTR_CALLS: frozenset = frozenset(
-        {
-            "system",
-            "popen",
-            "run",
-            "Popen",
-            "call",
-            "check_output",
-            "check_call",
-        }
-    )
+    # Maps known dangerous module names to the specific method names that are
+    # dangerous when called on that module. This is intentionally scoped to
+    # (receiver, method) pairs to avoid false positives:
+    #   thread.run()     — safe, receiver is not subprocess/os
+    #   client.call()    — safe, receiver is not subprocess/os
+    #   subprocess.run() — dangerous, receiver IS subprocess
+    # Limitation: import aliasing (e.g., `import subprocess as sp; sp.run()`)
+    # is not caught here — the regex heuristic layer provides partial coverage.
+    _DANGEROUS_RECEIVER_METHODS: Dict[str, frozenset] = {
+        "subprocess": frozenset(
+            {"run", "Popen", "call", "check_output", "check_call", "popen"}
+        ),
+        "os": frozenset({"system", "popen"}),
+    }
     # Dangerous module import names (caught at ast.Import / ast.ImportFrom level)
     _DANGEROUS_IMPORTS: frozenset = frozenset(
         {
@@ -397,10 +400,17 @@ class A2AVerificationInterceptor:
                 func = node.func
                 if isinstance(func, ast.Name) and func.id in self._DANGEROUS_CALL_NAMES:
                     ast_threats.append(f"call:{func.id}()")
-                # Attribute calls: os.system(...), subprocess.run(...), etc.
+                # Receiver-scoped attribute calls: subprocess.run(...), os.system(...)
+                # Only blocked when called on a known dangerous receiver — this avoids
+                # false positives from legitimate .run()/.call() on other objects.
                 elif isinstance(func, ast.Attribute):
-                    if func.attr in self._DANGEROUS_ATTR_CALLS:
-                        ast_threats.append(f"attr:.{func.attr}()")
+                    if isinstance(func.value, ast.Name):
+                        receiver = func.value.id
+                        dangerous_methods = self._DANGEROUS_RECEIVER_METHODS.get(
+                            receiver, frozenset()
+                        )
+                        if func.attr in dangerous_methods:
+                            ast_threats.append(f"call:{receiver}.{func.attr}()")
 
             # Dangerous imports: import subprocess, from ctypes import ...
             elif isinstance(node, ast.Import):
@@ -520,7 +530,7 @@ class A2AVerificationInterceptor:
         """Record telemetry for this intercept."""
         latency_ms = (time.perf_counter() - start_time) * 1000
         record_intercept(
-            status=verdict.status.value,
+            status=verdict.status,
             engine=verdict.engine_used,
             sender_id=sender_id,
             latency_ms=latency_ms,

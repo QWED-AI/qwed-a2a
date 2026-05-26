@@ -12,6 +12,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+# Imported here (not at top) to avoid circular imports —
+# schema is a leaf module with no telemetry dependency.
+from qwed_a2a.protocol.schema import VerdictStatus
+
 # Conditional Sentry import
 try:
     import sentry_sdk
@@ -118,7 +122,7 @@ def init_telemetry(
 
 
 def record_intercept(
-    status: str,
+    status: VerdictStatus,
     engine: Optional[str],
     sender_id: str,
     latency_ms: float,
@@ -129,13 +133,13 @@ def record_intercept(
     metrics.total_latency_ms += latency_ms
     metrics.by_sender[sender_id] = metrics.by_sender.get(sender_id, 0) + 1
 
-    if status == "forwarded":
+    if status == VerdictStatus.FORWARDED:
         metrics.total_forwarded += 1
-    elif status == "blocked":
+    elif status == VerdictStatus.BLOCKED:
         metrics.total_blocked += 1
-    elif status == "unverifiable":
+    elif status == VerdictStatus.UNVERIFIABLE:
         metrics.total_unverifiable += 1
-    elif status == "heuristic_pass":
+    elif status == VerdictStatus.HEURISTIC_PASS:
         metrics.total_heuristic_pass += 1
     else:
         metrics.total_errors += 1
