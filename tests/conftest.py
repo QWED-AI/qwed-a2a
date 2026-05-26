@@ -2,6 +2,12 @@
 Shared test fixtures for qwed-a2a test suite.
 """
 
+import os
+
+# Set deployment ID before any qwed_a2a modules are imported.
+# crypto.py reads this at module-level; conftest is loaded first by pytest.
+os.environ.setdefault("QWED_A2A_DEPLOYMENT_ID", "qwed-a2a-test-deployment")
+
 from decimal import Decimal
 
 import pytest

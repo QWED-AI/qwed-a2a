@@ -15,6 +15,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+from pydantic import BaseModel, ValidationError
+
 try:
     import jwt
     from cryptography.hazmat.backends import default_backend
@@ -114,16 +116,29 @@ class JtiRegistry:
 
 
 # Module-level deployment ID — shared across all processes in the same
-# logical deployment. Set QWED_A2A_DEPLOYMENT_ID in the environment so
-# that the signing service and the verifying service see the same value.
-#
-# Without the env var, each process gets a random ID — suitable for
-# single-process testing but unusable for cross-process verification.
-# In production this MUST be set explicitly.
-_DEPLOYMENT_ID: str = os.environ.get(
-    "QWED_A2A_DEPLOYMENT_ID",
-    f"qwed-a2a-{os.urandom(8).hex()}",  # random fallback — not pid-tied
-)
+# logical deployment. QWED_A2A_DEPLOYMENT_ID MUST be set in the environment;
+# a random fallback would silently make cross-process verification always
+# fail (a different process would get a different ID), violating fail-closed.
+_DEPLOYMENT_ID: Optional[str] = os.environ.get("QWED_A2A_DEPLOYMENT_ID")
+if not _DEPLOYMENT_ID:
+    raise RuntimeError(
+        "QWED_A2A_DEPLOYMENT_ID environment variable is not set. "
+        "All services in the same logical deployment must share a stable ID "
+        "so that attestation tokens can be verified across processes. "
+        "Set QWED_A2A_DEPLOYMENT_ID before importing qwed_a2a."
+    )
+
+
+class _QwedA2AClaims(BaseModel):
+    """Typed model for the qwed_a2a nested claim block in attestation JWTs."""
+
+    version: str
+    verdict: str
+    engine: str
+    sender: str
+    receiver: str
+    deployment_id: str
+    session_id: Optional[str] = None
 
 
 class A2ACryptoService:
@@ -254,7 +269,7 @@ class A2ACryptoService:
         key_pair = self._ensure_key_pair()
 
         try:
-            claims = jwt.decode(
+            raw_claims = jwt.decode(
                 token,
                 key_pair.public_key_pem,
                 algorithms=[self.ALGORITHM],
@@ -265,26 +280,32 @@ class A2ACryptoService:
         except jwt.InvalidTokenError as exc:
             return False, None, f"Invalid token: {exc}"
 
-        # Step 4: deployment context check — runs after signature validation
-        # so we only inspect claims from cryptographically sound tokens.
-        # This blocks cross-deployment replay in environments where signing
-        # keys are shared across multiple QWED-A2A deployments.
-        qwed_claims = claims.get("qwed_a2a", {})
-        token_deployment_id = qwed_claims.get("deployment_id")
-        if token_deployment_id != _DEPLOYMENT_ID:
+        # Step 4: structural validation of the qwed_a2a nested claim block.
+        # jwt.decode() only validates standard claims and the signature; it
+        # does not enforce that qwed_a2a is a mapping with required fields.
+        # A signed token with qwed_a2a set to a non-mapping would raise an
+        # AttributeError rather than returning a clean rejection tuple.
+        try:
+            qwed_claims = _QwedA2AClaims.model_validate(raw_claims.get("qwed_a2a", {}))
+        except ValidationError:
+            return False, None, "Invalid qwed_a2a claims structure"
+
+        # Step 5: deployment context check — runs after structural validation
+        # so we only act on well-formed tokens from cryptographically sound JWTs.
+        if qwed_claims.deployment_id != _DEPLOYMENT_ID:
             return (
                 False,
                 None,
                 "Deployment context mismatch: token not issued by this deployment",
             )
 
-        # Step 5: replay check — must happen AFTER all other validation
+        # Step 6: replay check — must happen AFTER all other validation
         # so we don't pollute the registry with otherwise-invalid tokens.
-        jti = claims.get("jti")
+        jti = raw_claims.get("jti")
         if not jti:
             return False, None, "Missing jti claim"
 
         if not self._jti_registry.check_and_register(jti):
             return False, None, "Replay detected: jti already seen"
 
-        return True, claims, None
+        return True, raw_claims, None

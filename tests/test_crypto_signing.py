@@ -43,13 +43,13 @@ def verifier(crypto_service):
     has an independent jti registry — mirrors the real-world topology
     where sign and verify happen on different services.
     """
-    v = A2ACryptoService.__new__(A2ACryptoService)
-    v.issuer_id = crypto_service.issuer_id
-    v.validity_seconds = crypto_service.validity_seconds
-    # Force key pair generation on the issuer first, then share it
+    v = A2ACryptoService(
+        issuer_id=crypto_service.issuer_id,
+        validity_seconds=crypto_service.validity_seconds,
+    )
+    # Share the issuer key pair so cross-service verification works
     crypto_service._ensure_key_pair()
     v._key_pair = crypto_service._key_pair
-    v._jti_registry = JtiRegistry(ttl_seconds=crypto_service.validity_seconds)
     return v
 
 
@@ -129,10 +129,10 @@ class TestJtiRegistry:
         registry = JtiRegistry(ttl_seconds=300)
         results = []
         lock = threading.Lock()
-        barrier = threading.Barrier(20)
+        barrier = threading.Barrier(20, timeout=5)
 
         def register():
-            barrier.wait()  # hold until all threads are ready
+            barrier.wait()  # hold until all threads are ready, or timeout
             result = registry.check_and_register("shared-jti")
             with lock:
                 results.append(result)
@@ -141,7 +141,8 @@ class TestJtiRegistry:
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=5)
+            assert not t.is_alive(), "Thread did not complete within timeout"
 
         assert results.count(True) == 1
         assert results.count(False) == 19
@@ -343,17 +344,25 @@ class TestReplayPrevention:
             algorithm=A2ACryptoService.ALGORITHM,
         )
 
-        # Fresh verifier — empty registry, no prior knowledge of this jti
-        verifier = A2ACryptoService.__new__(A2ACryptoService)
-        verifier.issuer_id = service.issuer_id
-        verifier.validity_seconds = service.validity_seconds
+        # Verifier with the same key pair but independent registry.
+        # Pre-register the jti so that a replay-first implementation
+        # would incorrectly return a replay error instead of expiry.
+        verifier = A2ACryptoService(
+            issuer_id=service.issuer_id,
+            validity_seconds=service.validity_seconds,
+        )
         verifier._key_pair = key_pair
-        verifier._jti_registry = JtiRegistry(ttl_seconds=300)
+        # Seed the jti — if verify_attestation checked replay before expiry
+        # it would return "Replay detected" here instead of "expired".
+        verifier._jti_registry.check_and_register(raw["jti"])
 
         is_valid, _, error = verifier.verify_attestation(expired_token)
         assert is_valid is False
         assert error is not None
-        assert "expired" in error.lower()
+        # Must be expiry error — proves expiry check runs before replay check.
+        assert (
+            "expired" in error.lower()
+        ), f"Expected expiry error (proving ordering), got: {error!r}"
 
     def test_tampered_token_does_not_pollute_verifier_registry(
         self, crypto_service, verifier
@@ -413,12 +422,12 @@ class TestDeploymentContextValidation:
             token = _sign(issuer, trace_id="t_cross_deploy")
 
         # Now verify with a service that sees the REAL _DEPLOYMENT_ID
-        verifier = A2ACryptoService.__new__(A2ACryptoService)
-        verifier.issuer_id = issuer.issuer_id
-        verifier.validity_seconds = issuer.validity_seconds
         issuer._ensure_key_pair()
+        verifier = A2ACryptoService(
+            issuer_id=issuer.issuer_id,
+            validity_seconds=issuer.validity_seconds,
+        )
         verifier._key_pair = issuer._key_pair
-        verifier._jti_registry = JtiRegistry(ttl_seconds=300)
 
         is_valid, claims, error = verifier.verify_attestation(token)
         assert is_valid is False
@@ -447,15 +456,20 @@ class TestDeploymentContextValidation:
             algorithm=A2ACryptoService.ALGORITHM,
         )
 
-        verifier = A2ACryptoService.__new__(A2ACryptoService)
-        verifier.issuer_id = crypto_service.issuer_id
-        verifier.validity_seconds = crypto_service.validity_seconds
+        verifier = A2ACryptoService(
+            issuer_id=crypto_service.issuer_id,
+            validity_seconds=crypto_service.validity_seconds,
+        )
         verifier._key_pair = key_pair
-        verifier._jti_registry = JtiRegistry(ttl_seconds=300)
 
         is_valid, _, error = verifier.verify_attestation(patched_token)
+        # Missing deployment_id fails Pydantic validation before
+        # the explicit deployment context check runs.
         assert is_valid is False
-        assert "Deployment context mismatch" in error
+        assert error in (
+            "Invalid qwed_a2a claims structure",
+            "Deployment context mismatch: token not issued by this deployment",
+        )
 
     def test_deployment_id_check_runs_before_jti_check(self):
         """
@@ -471,15 +485,78 @@ class TestDeploymentContextValidation:
         with patch.object(crypto_module, "_DEPLOYMENT_ID", "foreign-deployment-abc"):
             token = _sign(issuer, trace_id="t_order_deploy")
 
-        verifier = A2ACryptoService.__new__(A2ACryptoService)
-        verifier.issuer_id = issuer.issuer_id
-        verifier.validity_seconds = issuer.validity_seconds
         issuer._ensure_key_pair()
+        verifier = A2ACryptoService(
+            issuer_id=issuer.issuer_id,
+            validity_seconds=issuer.validity_seconds,
+        )
         verifier._key_pair = issuer._key_pair
-        verifier._jti_registry = JtiRegistry(ttl_seconds=300)
 
         size_before = len(verifier._jti_registry)
         verifier.verify_attestation(token)
         # Registry must not have grown — cross-deployment token was rejected
         # before the jti check ran
         assert len(verifier._jti_registry) == size_before
+
+
+class TestClaimsValidation:
+    """
+    Tests for Pydantic structural validation of JWT claims.
+
+    verify_attestation() validates qwed_a2a as a typed model before
+    accessing deployment_id — preventing AttributeError on malformed tokens.
+    """
+
+    def test_malformed_qwed_a2a_claim_rejected(self, crypto_service):
+        """A token with qwed_a2a set to a non-mapping must be cleanly rejected."""
+        import jwt as pyjwt
+
+        token = _sign(crypto_service, trace_id="t_malform")
+        key_pair = crypto_service._ensure_key_pair()
+
+        raw = pyjwt.decode(token, options={"verify_signature": False})
+        raw["qwed_a2a"] = "this-should-be-a-dict-not-a-string"
+
+        bad_token = pyjwt.encode(
+            raw,
+            key_pair.private_key_pem,
+            algorithm=A2ACryptoService.ALGORITHM,
+        )
+
+        verifier = A2ACryptoService(
+            issuer_id=crypto_service.issuer_id,
+            validity_seconds=crypto_service.validity_seconds,
+        )
+        verifier._key_pair = key_pair
+
+        is_valid, claims, error = verifier.verify_attestation(bad_token)
+        assert is_valid is False
+        assert claims is None
+        assert "Invalid qwed_a2a claims" in error
+
+    def test_missing_qwed_a2a_claim_rejected(self, crypto_service):
+        """A token with qwed_a2a entirely absent must be rejected."""
+        import jwt as pyjwt
+
+        token = _sign(crypto_service, trace_id="t_no_qwed_a2a")
+        key_pair = crypto_service._ensure_key_pair()
+
+        raw = pyjwt.decode(token, options={"verify_signature": False})
+        raw.pop("qwed_a2a", None)
+
+        bad_token = pyjwt.encode(
+            raw,
+            key_pair.private_key_pem,
+            algorithm=A2ACryptoService.ALGORITHM,
+        )
+
+        verifier = A2ACryptoService(
+            issuer_id=crypto_service.issuer_id,
+            validity_seconds=crypto_service.validity_seconds,
+        )
+        verifier._key_pair = key_pair
+
+        is_valid, claims, error = verifier.verify_attestation(bad_token)
+        assert is_valid is False
+        assert claims is None
+        assert "Invalid qwed_a2a claims" in error
