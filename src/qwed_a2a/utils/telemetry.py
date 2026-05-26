@@ -12,6 +12,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+# Imported here (not at top) to avoid circular imports —
+# schema is a leaf module with no telemetry dependency.
+from qwed_a2a.protocol.schema import VerdictStatus
+
 # Conditional Sentry import
 try:
     import sentry_sdk
@@ -32,6 +36,7 @@ class InterceptMetrics:
     total_forwarded: int = 0
     total_blocked: int = 0
     total_unverifiable: int = 0
+    total_heuristic_pass: int = 0
     total_errors: int = 0
     total_latency_ms: float = 0.0
     by_engine: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
@@ -55,6 +60,7 @@ class InterceptMetrics:
             "total_forwarded": self.total_forwarded,
             "total_blocked": self.total_blocked,
             "total_unverifiable": self.total_unverifiable,
+            "total_heuristic_pass": self.total_heuristic_pass,
             "total_errors": self.total_errors,
             "average_latency_ms": round(self.average_latency_ms, 2),
             "block_rate": round(self.block_rate, 4),
@@ -116,7 +122,7 @@ def init_telemetry(
 
 
 def record_intercept(
-    status: str,
+    status: VerdictStatus,
     engine: Optional[str],
     sender_id: str,
     latency_ms: float,
@@ -127,12 +133,14 @@ def record_intercept(
     metrics.total_latency_ms += latency_ms
     metrics.by_sender[sender_id] = metrics.by_sender.get(sender_id, 0) + 1
 
-    if status == "forwarded":
+    if status == VerdictStatus.FORWARDED:
         metrics.total_forwarded += 1
-    elif status == "blocked":
+    elif status == VerdictStatus.BLOCKED:
         metrics.total_blocked += 1
-    elif status == "unverifiable":
+    elif status == VerdictStatus.UNVERIFIABLE:
         metrics.total_unverifiable += 1
+    elif status == VerdictStatus.HEURISTIC_PASS:
+        metrics.total_heuristic_pass += 1
     else:
         metrics.total_errors += 1
 

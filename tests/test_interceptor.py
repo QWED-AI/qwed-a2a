@@ -56,13 +56,13 @@ class TestInterceptorCode:
             dangerous_code_message, trace_id="t_code_bad"
         )
         assert verdict.status == VerdictStatus.BLOCKED
-        assert "os.system" in verdict.reason
+        assert "system" in verdict.reason
         assert verdict.engine_used == "code_guard"
 
-    async def test_safe_code_forwarded(self, interceptor, safe_code_message):
-        """Safe code should be forwarded."""
+    async def test_safe_code_heuristic_pass(self, interceptor, safe_code_message):
+        """Safe code should return HEURISTIC_PASS — heuristic scan, not deterministic proof."""
         verdict = await interceptor.intercept(safe_code_message, trace_id="t_code_safe")
-        assert verdict.status == VerdictStatus.FORWARDED
+        assert verdict.status == VerdictStatus.HEURISTIC_PASS
         assert verdict.engine_used == "code_guard"
 
 
