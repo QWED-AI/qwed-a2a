@@ -709,3 +709,68 @@ class TestPersistentSigningKey:
         )
         with pytest.raises(RuntimeError, match="sign attestation"):
             await interceptor.intercept(msg, trace_id="t_no_pem")
+
+    def test_rsa_key_rejected(self):
+        """An RSA key must be rejected with a clear error about wrong key type."""
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization as ser
+
+        rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = rsa_key.private_bytes(
+            encoding=ser.Encoding.PEM,
+            format=ser.PrivateFormat.PKCS8,
+            encryption_algorithm=ser.NoEncryption(),
+        ).decode()
+        service = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+        with pytest.raises(RuntimeError, match="must be an EC P-256"):
+            service._ensure_key_pair()
+
+    def test_wrong_ec_curve_rejected(self):
+        """A P-384 key must be rejected with a clear error about wrong curve."""
+        from cryptography.hazmat.primitives.asymmetric import ec as ec_curves
+        from cryptography.hazmat.primitives import serialization as ser
+
+        p384_key = ec_curves.generate_private_key(ec_curves.SECP384R1())
+        pem = p384_key.private_bytes(
+            encoding=ser.Encoding.PEM,
+            format=ser.PrivateFormat.PKCS8,
+            encryption_algorithm=ser.NoEncryption(),
+        ).decode()
+        service = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+        with pytest.raises(RuntimeError, match="must use curve SECP256R1"):
+            service._ensure_key_pair()
+
+    def test_bad_pem_raises_clear_error(self):
+        """Truncated or garbage PEM must be wrapped into RuntimeError."""
+        service = A2ACryptoService(
+            issuer_id="did:qwed:a2a:test",
+            pem_key="-----BEGIN GARBAGE-----\nnot-a-real-key\n-----END GARBAGE-----",
+        )
+        with pytest.raises(RuntimeError, match="must be an unencrypted"):
+            service._ensure_key_pair()
+
+    def test_jwks_endpoint_returns_503_when_no_pem(self, monkeypatch):
+        """/.well-known/jwks.json must return 503 if no signing key configured."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from qwed_a2a.protocol.endpoints import wellknown_router
+
+        monkeypatch.delenv("QWED_A2A_SIGNING_KEY_PEM", raising=False)
+        app = FastAPI()
+        app.include_router(wellknown_router)
+        client = TestClient(app)
+        resp = client.get("/.well-known/jwks.json")
+        assert resp.status_code == 503
+        assert "unavailable" in resp.json()["detail"]
+
+    def test_ensure_key_pair_fails_without_crypto_lib(self, monkeypatch):
+        """_ensure_key_pair must raise RuntimeError if cryptography is unavailable."""
+        import qwed_a2a.security.crypto as crypto_mod
+
+        monkeypatch.setattr(crypto_mod, "HAS_CRYPTO", False)
+        service = A2ACryptoService(
+            issuer_id="did:qwed:a2a:test",
+            pem_key=_generate_test_pem(),
+        )
+        with pytest.raises(RuntimeError, match="cryptography and PyJWT"):
+            service._ensure_key_pair()
