@@ -178,6 +178,11 @@ class A2ACryptoService:
         self._jti_registry = JtiRegistry(ttl_seconds=validity_seconds)
 
     def _ensure_key_pair(self) -> KeyPair:
+        if not HAS_CRYPTO:
+            raise RuntimeError(
+                "cryptography and PyJWT packages required. "
+                "Install with: pip install cryptography PyJWT"
+            )
         if self._key_pair is not None:
             return self._key_pair
 
@@ -194,7 +199,15 @@ class A2ACryptoService:
                     "openssl pkcs8 -topk8 -nocrypt"
                 )
 
-            private_key = serialization.load_pem_private_key(pem.encode(), password=None)
+            try:
+                private_key = serialization.load_pem_private_key(
+                    pem.encode(), password=None
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "QWED_A2A_SIGNING_KEY_PEM must be an unencrypted EC P-256 "
+                    "private key in PEM format."
+                ) from exc
 
             if not isinstance(private_key, ec.EllipticCurvePrivateKey):
                 raise RuntimeError(
