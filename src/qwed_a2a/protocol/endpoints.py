@@ -80,7 +80,7 @@ async def intercept_message(message: AgentMessage) -> Dict[str, Any]:
         return verdict.model_dump(mode="json")
     except RuntimeError as exc:
         logger.error("Interceptor runtime error: %s", exc)
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(status_code=503, detail="Signing key unavailable")
     except Exception as exc:
         logger.error("Interceptor internal error: %s", exc)
         raise HTTPException(
@@ -107,7 +107,34 @@ async def metrics() -> Dict[str, Any]:
 wellknown_router = APIRouter(tags=["JWKS"])
 
 
-@wellknown_router.get("/.well-known/jwks.json")
+@wellknown_router.get(
+    "/.well-known/jwks.json",
+    responses={
+        200: {
+            "description": "JWKS key set",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "keys": [
+                            {
+                                "kty": "EC",
+                                "crv": "P-256",
+                                "x": "...",
+                                "y": "...",
+                                "kid": "did:qwed:a2a:local#key-...",
+                                "use": "sig",
+                                "alg": "ES256",
+                            }
+                        ]
+                    }
+                }
+            },
+        },
+        503: {
+            "description": "Signing key unavailable — QWED_A2A_SIGNING_KEY_PEM not set or invalid"
+        },
+    },
+)
 async def jwks_endpoint() -> Dict[str, Any]:
     """Public key set for JWT verification by external consumers."""
     try:
@@ -115,4 +142,5 @@ async def jwks_endpoint() -> Dict[str, Any]:
         jwk = interceptor.crypto.get_public_key_jwk()
         return {"keys": [jwk]}
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        logger.error("Failed to serve JWKS: %s", exc)
+        raise HTTPException(status_code=503, detail="Signing key unavailable")
