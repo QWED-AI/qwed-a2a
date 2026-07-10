@@ -226,3 +226,4 @@ class TestJWKSEndpoint:
         assert "y" in key
         assert "kid" in key
         assert key["use"] == "sig"
+        assert key["alg"] == "ES256"

@@ -110,6 +110,9 @@ wellknown_router = APIRouter(tags=["JWKS"])
 @wellknown_router.get("/.well-known/jwks.json")
 async def jwks_endpoint() -> Dict[str, Any]:
     """Public key set for JWT verification by external consumers."""
-    interceptor = get_interceptor()
-    jwk = interceptor.crypto.get_public_key_jwk()
-    return {"keys": [jwk]}
+    try:
+        interceptor = get_interceptor()
+        jwk = interceptor.crypto.get_public_key_jwk()
+        return {"keys": [jwk]}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))

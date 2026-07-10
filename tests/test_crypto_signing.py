@@ -680,6 +680,7 @@ class TestPersistentSigningKey:
         assert "y" in jwk
         assert "kid" in jwk
         assert jwk["use"] == "sig"
+        assert jwk["alg"] == "ES256"
 
     @pytest.mark.asyncio
     async def test_interceptor_intercept_without_pem_fails_closed(self, monkeypatch):

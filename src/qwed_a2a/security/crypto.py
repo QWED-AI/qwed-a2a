@@ -20,7 +20,6 @@ from pydantic import BaseModel, ValidationError
 
 try:
     import jwt
-    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -172,6 +171,7 @@ class A2ACryptoService:
         self.validity_seconds = validity_seconds
         self._pem_key = pem_key
         self._key_pair: Optional[KeyPair] = None
+        self._key_lock = threading.Lock()
         # Each service instance owns its replay registry.
         # TTL is aligned with the validity window so entries are never
         # held longer than the tokens they protect against.
@@ -181,27 +181,43 @@ class A2ACryptoService:
         if self._key_pair is not None:
             return self._key_pair
 
-        pem = self._pem_key or os.environ.get("QWED_A2A_SIGNING_KEY_PEM")
-        if not pem:
-            raise RuntimeError(
-                "QWED_A2A_SIGNING_KEY_PEM environment variable is not set. "
-                "QWED-A2A requires a persistent signing key for audit continuity. "
-                "Generate with: openssl ecparam -name prime256v1 -genkey -noout | "
-                "openssl pkcs8 -topk8 -nocrypt"
+        with self._key_lock:
+            if self._key_pair is not None:
+                return self._key_pair
+
+            pem = self._pem_key or os.environ.get("QWED_A2A_SIGNING_KEY_PEM")
+            if not pem:
+                raise RuntimeError(
+                    "QWED_A2A_SIGNING_KEY_PEM environment variable is not set. "
+                    "QWED-A2A requires a persistent signing key for audit continuity. "
+                    "Generate with: openssl ecparam -name prime256v1 -genkey -noout | "
+                    "openssl pkcs8 -topk8 -nocrypt"
+                )
+
+            private_key = serialization.load_pem_private_key(pem.encode(), password=None)
+
+            if not isinstance(private_key, ec.EllipticCurvePrivateKey):
+                raise RuntimeError(
+                    "QWED_A2A_SIGNING_KEY_PEM must be an EC P-256 (prime256v1) private key. "
+                    f"Got {type(private_key).__name__}."
+                )
+            if not isinstance(private_key.curve, ec.SECP256R1):
+                raise RuntimeError(
+                    "QWED_A2A_SIGNING_KEY_PEM must use curve SECP256R1 (prime256v1, P-256). "
+                    f"Got curve {private_key.curve.name}."
+                )
+
+            public_key = private_key.public_key()
+            fingerprint = self._compute_fingerprint(public_key)
+            key_id = f"{self.issuer_id}#key-{fingerprint[:16]}"
+
+            self._key_pair = KeyPair(
+                issuer_id=self.issuer_id,
+                key_id=key_id,
+                _private_key=private_key,
+                _public_key=public_key,
             )
-
-        private_key = serialization.load_pem_private_key(pem.encode(), password=None)
-        public_key = private_key.public_key()
-        fingerprint = self._compute_fingerprint(public_key)
-        key_id = f"{self.issuer_id}#key-{fingerprint[:16]}"
-
-        self._key_pair = KeyPair(
-            issuer_id=self.issuer_id,
-            key_id=key_id,
-            _private_key=private_key,
-            _public_key=public_key,
-        )
-        return self._key_pair
+            return self._key_pair
 
     @staticmethod
     def _compute_fingerprint(public_key) -> str:
@@ -227,6 +243,7 @@ class A2ACryptoService:
             "y": base64.urlsafe_b64encode(y).rstrip(b"=").decode(),
             "kid": key_pair.key_id,
             "use": "sig",
+            "alg": "ES256",
         }
 
     @staticmethod
