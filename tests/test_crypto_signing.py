@@ -27,12 +27,29 @@ import pytest
 from qwed_a2a.security.crypto import A2ACryptoService, JtiRegistry
 
 
+# ─── helpers ──────────────────────────────────────────────────────────────────
+
+
+def _generate_test_pem() -> str:
+    """Generate a fresh ECDSA P-256 PEM key for testing."""
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
+
+    pk = ec.generate_private_key(ec.SECP256R1(), default_backend())
+    return pk.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
 # ─── fixtures ─────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture
 def crypto_service():
-    """Fresh issuer crypto service per test."""
+    """Fresh issuer crypto service per test (loads key from env var)."""
     return A2ACryptoService(issuer_id="did:qwed:a2a:test")
 
 
@@ -245,8 +262,15 @@ class TestCrossServiceVerification:
 
     def test_different_instance_cannot_verify(self):
         """A token signed by one service should not verify with a different key pair."""
-        service_a = A2ACryptoService(issuer_id="did:qwed:a2a:node-A")
-        service_b = A2ACryptoService(issuer_id="did:qwed:a2a:node-B")
+        key_a = _generate_test_pem()
+        key_b = _generate_test_pem()
+
+        service_a = A2ACryptoService(
+            issuer_id="did:qwed:a2a:node-A", pem_key=key_a
+        )
+        service_b = A2ACryptoService(
+            issuer_id="did:qwed:a2a:node-B", pem_key=key_b
+        )
 
         token = _sign(service_a, trace_id="cross_test")
 
@@ -560,3 +584,127 @@ class TestClaimsValidation:
         assert is_valid is False
         assert claims is None
         assert "Invalid qwed_a2a claims" in error
+
+
+# ─── Audit continuity — persistent signing key ─────────────────────────────────
+
+
+class TestPersistentSigningKey:
+    """Tests for issue #11: process-local ephemeral keys."""
+
+    def test_missing_pem_raises_on_key_access(self):
+        """Service must fail closed if QWED_A2A_SIGNING_KEY_PEM is not set."""
+        import os
+
+        original = os.environ.pop("QWED_A2A_SIGNING_KEY_PEM", None)
+        try:
+            service = A2ACryptoService(issuer_id="did:qwed:a2a:test")
+            with pytest.raises(RuntimeError, match="QWED_A2A_SIGNING_KEY_PEM"):
+                service._ensure_key_pair()
+        finally:
+            if original is not None:
+                os.environ["QWED_A2A_SIGNING_KEY_PEM"] = original
+
+    def test_signing_key_loaded_from_injected_pem(self):
+        """A PEM passed to the constructor must be used instead of the env var."""
+        key_a = _generate_test_pem()
+        service = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=key_a)
+        service._ensure_key_pair()
+        assert service._key_pair is not None
+
+    def test_same_pem_produces_same_key_id(self):
+        """Loading the same PEM twice must produce the same key_id."""
+        pem = _generate_test_pem()
+
+        s1 = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+        s1._ensure_key_pair()
+        kid1 = s1._key_pair.key_id
+
+        s2 = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+        s2._ensure_key_pair()
+        kid2 = s2._key_pair.key_id
+
+        assert kid1 == kid2
+
+    def test_key_id_is_fingerprint_based(self):
+        """key_id must include a fingerprint, not be 'signing-key-v1'."""
+        pem = _generate_test_pem()
+        service = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+        service._ensure_key_pair()
+        kid = service._key_pair.key_id
+        assert "#key-" in kid, f"Expected fingerprint-based key_id, got: {kid}"
+        assert "signing-key-v1" not in kid
+
+    def test_audit_continuity_after_restart(self):
+        """
+        A JWT signed before restart must be verifiable after restart
+        when the same PEM key is loaded again — audit continuity.
+        """
+        pem = _generate_test_pem()
+
+        s1 = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+        token = _sign(s1, trace_id="t_audit_cont")
+
+        s2 = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+
+        is_valid, claims, error = s2.verify_attestation(token)
+        assert is_valid is True, (
+            f"JWT signed before restart is not verifiable after restart: {error}"
+        )
+        assert claims["jti"] == "t_audit_cont"
+
+    def test_two_instances_with_same_pem_produce_mutually_verifiable_jwts(self):
+        """
+        Two service instances with the same PEM must be able to verify
+        each other's JWTs — enables horizontal scaling.
+        """
+        pem = _generate_test_pem()
+
+        s1 = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+        s2 = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+
+        token = _sign(s1, trace_id="t_mutual")
+
+        is_valid, claims, error = s2.verify_attestation(token)
+        assert is_valid is True, f"Cross-instance verification failed: {error}"
+
+    def test_get_public_key_jwk_returns_valid_jwk(self):
+        """get_public_key_jwk() must return a dict with required JWK fields."""
+        pem = _generate_test_pem()
+        service = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
+        jwk = service.get_public_key_jwk()
+
+        assert jwk["kty"] == "EC"
+        assert jwk["crv"] == "P-256"
+        assert "x" in jwk
+        assert "y" in jwk
+        assert "kid" in jwk
+        assert jwk["use"] == "sig"
+
+    @pytest.mark.asyncio
+    async def test_interceptor_intercept_without_pem_fails_closed(self, monkeypatch):
+        """Interceptor must fail closed if no key is available on first sign."""
+        from decimal import Decimal
+        from qwed_a2a.interceptor import A2AVerificationInterceptor
+        from qwed_a2a.protocol.schema import AgentMessage, PayloadType
+        from qwed_a2a.security.trust_boundary import TrustBoundary
+
+        monkeypatch.delenv("QWED_A2A_SIGNING_KEY_PEM", raising=False)
+        interceptor = A2AVerificationInterceptor(
+            trust_boundary=TrustBoundary(default_allow=True)
+        )
+        msg = AgentMessage(
+            sender_agent_id="a",
+            receiver_agent_id="b",
+            payload_type=PayloadType.FINANCIAL_TRANSACTION,
+            payload={
+                "data": {
+                    "claimed_total": Decimal("10.00"),
+                    "line_items": [
+                        {"description": "Item", "amount": Decimal("10.00"), "quantity": 1}
+                    ],
+                }
+            },
+        )
+        with pytest.raises(RuntimeError, match="sign attestation"):
+            await interceptor.intercept(msg, trace_id="t_no_pem")

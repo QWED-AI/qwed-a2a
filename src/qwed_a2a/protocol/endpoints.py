@@ -102,3 +102,14 @@ async def health_check() -> Dict[str, str]:
 async def metrics() -> Dict[str, Any]:
     """Return aggregated intercept metrics."""
     return get_metrics().to_dict()
+
+
+wellknown_router = APIRouter(tags=["JWKS"])
+
+
+@wellknown_router.get("/.well-known/jwks.json")
+async def jwks_endpoint() -> Dict[str, Any]:
+    """Public key set for JWT verification by external consumers."""
+    interceptor = get_interceptor()
+    jwk = interceptor.crypto.get_public_key_jwk()
+    return {"keys": [jwk]}
