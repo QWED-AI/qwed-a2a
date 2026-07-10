@@ -47,6 +47,20 @@ QWED A2A is a **verification interceptor** for Google's [Agent-to-Agent (A2A) pr
 
 ## ⚡ Quick Start
 
+### Prerequisites — Signing Key
+
+QWED A2A requires a persistent ECDSA P-256 signing key for audit continuity
+(ephemeral per-process keys broke cross-restart verification). Set the key via the
+`QWED_A2A_SIGNING_KEY_PEM` environment variable:
+
+```bash
+# Generate a new P-256 private key (PKCS#8 format):
+openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt > qwed-a2a-key.pem
+
+# Set the environment variable:
+export QWED_A2A_SIGNING_KEY_PEM=$(cat qwed-a2a-key.pem)
+```
+
 ### Installation
 
 ```bash
@@ -246,7 +260,7 @@ Every verdict includes a signed **ES256 JWT attestation**:
 | **Tamper detection** | `sub` claim contains SHA-256 hash of original payload |
 | **Identity** | DID-based issuer (`did:qwed:a2a:local`) |
 | **Expiry** | 24 hours default |
-| **Cross-service** | Each instance has its own key pair |
+| **Key persistence** | Ephemeral keys replaced by `QWED_A2A_SIGNING_KEY_PEM` env var for audit continuity |
 
 ### Fail-Closed Attestations
 
@@ -254,6 +268,10 @@ Every verdict includes a signed **ES256 JWT attestation**:
 the interceptor raises at startup instead of returning unsigned verdicts. Signing
 failures also fail closed so `attestation_jwt=None` is never emitted as a normal
 verdict.
+
+The signing key is also fail-closed: if `QWED_A2A_SIGNING_KEY_PEM` is not set,
+the first call to sign an attestation raises `RuntimeError` rather than silently
+falling back to an ephemeral key.
 
 ---
 
@@ -263,10 +281,11 @@ QWED A2A includes a ready-to-use HTTP gateway. Because the interceptor uses a ze
 
 ```python
 from fastapi import FastAPI
-from qwed_a2a.protocol.endpoints import router
+from qwed_a2a.protocol.endpoints import router, wellknown_router
 
 app = FastAPI(title="QWED A2A Gateway")
 app.include_router(router)
+app.include_router(wellknown_router)
 
 # QWED_A2A_TRUSTED_AGENTS="agent-A,agent-B" uvicorn main:app --host 0.0.0.0 --port 8000
 ```
@@ -278,6 +297,7 @@ app.include_router(router)
 | `/a2a/intercept` | POST | Verify agent message — returns verdict + attestation |
 | `/a2a/health` | GET | Service health check |
 | `/a2a/metrics` | GET | Intercept metrics (forwarded, blocked, errors) |
+| `/.well-known/jwks.json` | GET | Public JWK set for JWT verification |
 
 ### cURL Test
 

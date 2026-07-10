@@ -16,18 +16,10 @@ from qwed_a2a.protocol.endpoints import (
     configure_interceptor,
     get_interceptor,
     router,
+    wellknown_router,
 )
 from qwed_a2a.protocol.schema import InterceptorConfig
-
-
 # ─── fixtures ──────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture(autouse=True)
-def reset_interceptor_singleton():
-    ep._interceptor = None
-    yield
-    ep._interceptor = None
 
 
 @pytest.fixture
@@ -197,3 +189,32 @@ class TestInterceptEndpoint:
             assert (
                 client.post("/a2a/intercept", json=general_payload).status_code == 500
             )
+
+
+# ─── /.well-known/jwks.json ────────────────────────────────────────────────────
+
+
+class TestJWKSEndpoint:
+    def test_returns_200(self, monkeypatch):
+        monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
+        application = FastAPI()
+        application.include_router(wellknown_router)
+        client = TestClient(application)
+        assert client.get("/.well-known/jwks.json").status_code == 200
+
+    def test_returns_valid_jwk_set(self, monkeypatch):
+        monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
+        application = FastAPI()
+        application.include_router(wellknown_router)
+        client = TestClient(application)
+        data = client.get("/.well-known/jwks.json").json()
+        assert "keys" in data
+        assert len(data["keys"]) == 1
+        key = data["keys"][0]
+        assert key["kty"] == "EC"
+        assert key["crv"] == "P-256"
+        assert "x" in key
+        assert "y" in key
+        assert "kid" in key
+        assert key["use"] == "sig"
+        assert key["alg"] == "ES256"

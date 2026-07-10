@@ -8,6 +8,21 @@ import os
 # crypto.py reads this at module-level; conftest is loaded first by pytest.
 os.environ.setdefault("QWED_A2A_DEPLOYMENT_ID", "qwed-a2a-test-deployment")
 
+# Generate a persistent test signing key so that all tests share a key pair,
+# simulating a real deployment. The key is injected via env var so that
+# A2ACryptoService._ensure_key_pair() loads it from there.
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import serialization
+
+_test_private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
+_test_signing_key_pem = _test_private_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.PKCS8,
+    encryption_algorithm=serialization.NoEncryption(),
+).decode()
+os.environ.setdefault("QWED_A2A_SIGNING_KEY_PEM", _test_signing_key_pem)
+
 from decimal import Decimal
 
 import pytest
@@ -18,12 +33,22 @@ from qwed_a2a.security.crypto import A2ACryptoService
 from qwed_a2a.security.trust_boundary import TrustBoundary
 from qwed_a2a.utils.telemetry import reset_metrics
 
+from qwed_a2a.protocol import endpoints as _ep
+
 
 @pytest.fixture(autouse=True)
 def _reset_telemetry():
     """Reset metrics before each test."""
     reset_metrics()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_interceptor_singleton():
+    """Reset the interceptor singleton before each test to prevent state leakage."""
+    _ep._interceptor = None
+    yield
+    _ep._interceptor = None
 
 
 @pytest.fixture

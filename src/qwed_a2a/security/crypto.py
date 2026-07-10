@@ -7,6 +7,7 @@ Provides ECDSA P-256 JWT attestation signing and verification with:
 - Session and deployment context binding
 """
 
+import base64
 import hashlib
 import os
 import threading
@@ -19,7 +20,6 @@ from pydantic import BaseModel, ValidationError
 
 try:
     import jwt
-    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -30,7 +30,11 @@ except ImportError:
 
 @dataclass
 class KeyPair:
-    """ECDSA P-256 key pair for A2A attestation signing."""
+    """ECDSA P-256 key pair for A2A attestation signing.
+
+    Keys are injected at construction — never generated internally.
+    Use A2ACryptoService which loads the key from QWED_A2A_SIGNING_KEY_PEM.
+    """
 
     issuer_id: str
     key_id: str
@@ -43,8 +47,11 @@ class KeyPair:
                 "cryptography and PyJWT packages required. "
                 "Install with: pip install cryptography PyJWT"
             )
-        self._private_key = ec.generate_private_key(ec.SECP256R1(), default_backend())
-        self._public_key = self._private_key.public_key()
+        if self._private_key is None or self._public_key is None:
+            raise RuntimeError(
+                "KeyPair requires both _private_key and _public_key. "
+                "Use A2ACryptoService which loads keys from QWED_A2A_SIGNING_KEY_PEM."
+            )
 
     @property
     def private_key_pem(self) -> bytes:
@@ -158,20 +165,99 @@ class A2ACryptoService:
         self,
         issuer_id: str = "did:qwed:a2a:local",
         validity_seconds: int = 300,
+        pem_key: Optional[str] = None,
     ):
         self.issuer_id = issuer_id
         self.validity_seconds = validity_seconds
+        self._pem_key = pem_key
         self._key_pair: Optional[KeyPair] = None
+        self._key_lock = threading.Lock()
         # Each service instance owns its replay registry.
         # TTL is aligned with the validity window so entries are never
         # held longer than the tokens they protect against.
         self._jti_registry = JtiRegistry(ttl_seconds=validity_seconds)
 
     def _ensure_key_pair(self) -> KeyPair:
-        if self._key_pair is None:
-            key_id = f"{self.issuer_id}#signing-key-v1"
-            self._key_pair = KeyPair(issuer_id=self.issuer_id, key_id=key_id)
-        return self._key_pair
+        if not HAS_CRYPTO:
+            raise RuntimeError(
+                "cryptography and PyJWT packages required. "
+                "Install with: pip install cryptography PyJWT"
+            )
+        if self._key_pair is not None:
+            return self._key_pair
+
+        with self._key_lock:
+            if self._key_pair is not None:
+                return self._key_pair
+
+            pem = self._pem_key or os.environ.get("QWED_A2A_SIGNING_KEY_PEM")
+            if not pem:
+                raise RuntimeError(
+                    "QWED_A2A_SIGNING_KEY_PEM environment variable is not set. "
+                    "QWED-A2A requires a persistent signing key for audit continuity. "
+                    "Generate with: openssl ecparam -name prime256v1 -genkey -noout | "
+                    "openssl pkcs8 -topk8 -nocrypt"
+                )
+
+            try:
+                private_key = serialization.load_pem_private_key(
+                    pem.encode(), password=None
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "QWED_A2A_SIGNING_KEY_PEM must be an unencrypted EC P-256 "
+                    "private key in PEM format."
+                ) from exc
+
+            if not isinstance(private_key, ec.EllipticCurvePrivateKey):
+                raise RuntimeError(
+                    "QWED_A2A_SIGNING_KEY_PEM must be an EC P-256 (prime256v1) private key. "
+                    f"Got {type(private_key).__name__}."
+                )
+            if not isinstance(private_key.curve, ec.SECP256R1):
+                raise RuntimeError(
+                    "QWED_A2A_SIGNING_KEY_PEM must use curve SECP256R1 (prime256v1, P-256). "
+                    f"Got curve {private_key.curve.name}."
+                )
+
+            public_key = private_key.public_key()
+            fingerprint = self._compute_fingerprint(public_key)
+            key_id = f"{self.issuer_id}#key-{fingerprint[:16]}"
+
+            self._key_pair = KeyPair(
+                issuer_id=self.issuer_id,
+                key_id=key_id,
+                _private_key=private_key,
+                _public_key=public_key,
+            )
+            return self._key_pair
+
+    @staticmethod
+    def _compute_fingerprint(public_key) -> str:
+        """Compute a deterministic SHA-256 fingerprint for a public key."""
+        public_bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return hashlib.sha256(public_bytes).hexdigest()
+
+    def get_public_key_jwk(self) -> dict:
+        """Return the current public key in JWK format for external consumers."""
+        key_pair = self._ensure_key_pair()
+        public_key = key_pair._public_key
+        numbers = public_key.public_numbers()
+        x = numbers.x.to_bytes(32, byteorder="big")
+        y = numbers.y.to_bytes(32, byteorder="big")
+
+        return {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": base64.urlsafe_b64encode(x).rstrip(b"=").decode(),
+            "y": base64.urlsafe_b64encode(y).rstrip(b"=").decode(),
+            "kid": key_pair.key_id,
+            "use": "sig",
+            "alg": "ES256",
+        }
 
     @staticmethod
     def hash_content(content: str) -> str:
