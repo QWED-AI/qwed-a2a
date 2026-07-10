@@ -19,16 +19,7 @@ from qwed_a2a.protocol.endpoints import (
     wellknown_router,
 )
 from qwed_a2a.protocol.schema import InterceptorConfig
-
-
 # ─── fixtures ──────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture(autouse=True)
-def reset_interceptor_singleton():
-    ep._interceptor = None
-    yield
-    ep._interceptor = None
 
 
 @pytest.fixture

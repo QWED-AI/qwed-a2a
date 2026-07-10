@@ -33,12 +33,22 @@ from qwed_a2a.security.crypto import A2ACryptoService
 from qwed_a2a.security.trust_boundary import TrustBoundary
 from qwed_a2a.utils.telemetry import reset_metrics
 
+from qwed_a2a.protocol import endpoints as _ep
+
 
 @pytest.fixture(autouse=True)
 def _reset_telemetry():
     """Reset metrics before each test."""
     reset_metrics()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_interceptor_singleton():
+    """Reset the interceptor singleton before each test to prevent state leakage."""
+    _ep._interceptor = None
+    yield
+    _ep._interceptor = None
 
 
 @pytest.fixture
