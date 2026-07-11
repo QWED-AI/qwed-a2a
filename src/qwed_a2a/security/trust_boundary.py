@@ -241,12 +241,6 @@ class TrustBoundary:
             )
         )
 
-        if not sender_trusted and not receiver_trusted:
-            return (
-                False,
-                f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist",
-            )
-
         if (
             sender_entry is not None
             and sender_entry.is_valid(now)
@@ -265,6 +259,12 @@ class TrustBoundary:
             return (
                 False,
                 f"Receiver '{receiver_id}' trust scope rejects this communication",
+            )
+
+        if sender_entry is None and receiver_entry is None:
+            return (
+                False,
+                f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist",
             )
 
         return None
