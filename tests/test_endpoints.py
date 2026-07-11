@@ -19,6 +19,7 @@ from qwed_a2a.protocol.endpoints import (
     wellknown_router,
 )
 from qwed_a2a.protocol.schema import InterceptorConfig
+from qwed_a2a.security.trust_boundary import TrustBoundary
 # ─── fixtures ──────────────────────────────────────────────────────────────────
 
 
@@ -68,31 +69,33 @@ class TestLoadTrustedAgents:
     def test_loads_agents_from_env(self, monkeypatch):
         monkeypatch.setenv("QWED_A2A_TRUSTED_AGENTS", "agent-a,agent-b")
         interceptor = MagicMock()
+        interceptor.trust = TrustBoundary(default_allow=False)
         _load_trusted_agents(interceptor)
-        assert interceptor.trust.trust_agent.call_count == 2
-        calls = [c.args[0] for c in interceptor.trust.trust_agent.call_args_list]
-        assert "agent-a" in calls
-        assert "agent-b" in calls
+        assert interceptor.trust.is_trusted("agent-a")
+        assert interceptor.trust.is_trusted("agent-b")
 
     def test_ignores_empty_entries(self, monkeypatch):
         monkeypatch.setenv("QWED_A2A_TRUSTED_AGENTS", "agent-a,,  ,agent-b")
         interceptor = MagicMock()
+        interceptor.trust = TrustBoundary(default_allow=False)
         _load_trusted_agents(interceptor)
-        assert interceptor.trust.trust_agent.call_count == 2
+        assert interceptor.trust.is_trusted("agent-a")
+        assert interceptor.trust.is_trusted("agent-b")
 
     def test_no_env_var_no_agents_registered(self, monkeypatch):
         monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
         interceptor = MagicMock()
+        interceptor.trust = TrustBoundary(default_allow=False)
         _load_trusted_agents(interceptor)
-        interceptor.trust.trust_agent.assert_not_called()
+        assert not interceptor.trust.is_trusted("any-agent")
 
     def test_whitespace_stripped_from_agent_ids(self, monkeypatch):
         monkeypatch.setenv("QWED_A2A_TRUSTED_AGENTS", "  agent-x  ,  agent-y  ")
         interceptor = MagicMock()
+        interceptor.trust = TrustBoundary(default_allow=False)
         _load_trusted_agents(interceptor)
-        calls = [c.args[0] for c in interceptor.trust.trust_agent.call_args_list]
-        assert "agent-x" in calls
-        assert "agent-y" in calls
+        assert interceptor.trust.is_trusted("agent-x")
+        assert interceptor.trust.is_trusted("agent-y")
 
 
 # ─── singleton ────────────────────────────────────────────────────────────────

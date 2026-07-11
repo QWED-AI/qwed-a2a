@@ -6,9 +6,12 @@ Manages agent allowlists, blocklists, and token-bucket rate limiting
 with automatic eviction of cold pairs.
 """
 
+import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Optional, Set, Tuple
+
+from qwed_a2a.utils.telemetry import logger
 
 
 @dataclass
@@ -25,7 +28,6 @@ class TokenBucket:
         Try to consume one token. Returns True if allowed, False if rate-limited.
         Automatically refills tokens based on elapsed time.
         """
-        # Refill tokens
         elapsed = now - self.last_refill
         self.tokens = min(self.capacity, self.tokens + elapsed * self.refill_rate)
         self.last_refill = now
@@ -34,6 +36,38 @@ class TokenBucket:
             self.tokens -= 1.0
             return True
         return False
+
+
+@dataclass
+class TrustEntry:
+    """Scoped, expiring trust grant for a single agent."""
+
+    agent_id: str
+    allowed_receivers: Optional[Set[str]] = None
+    allowed_payload_types: Optional[Set[str]] = None
+    valid_until: Optional[float] = None
+    granted_by: str = "config"
+    granted_at: float = field(default_factory=time.time)
+
+    def is_valid(self, now: float) -> bool:
+        if self.valid_until is not None and now > self.valid_until:
+            return False
+        return True
+
+    def allows(self, receiver: str, payload_type: str, now: float) -> bool:
+        if not self.is_valid(now):
+            return False
+        if (
+            self.allowed_receivers is not None
+            and receiver not in self.allowed_receivers
+        ):
+            return False
+        if (
+            self.allowed_payload_types is not None
+            and payload_type not in self.allowed_payload_types
+        ):
+            return False
+        return True
 
 
 class TrustBoundary:
@@ -57,7 +91,7 @@ class TrustBoundary:
 
         # Agent-level controls
         self._blocked_agents: Set[str] = set()
-        self._trusted_agents: Set[str] = set()
+        self._trusted_agents: Dict[str, TrustEntry] = {}
 
         # Pair-level controls
         self._blocked_pairs: Set[Tuple[str, str]] = set()
@@ -72,12 +106,45 @@ class TrustBoundary:
     def block_agent(self, agent_id: str) -> None:
         """Add an agent to the global blocklist."""
         self._blocked_agents.add(agent_id)
-        self._trusted_agents.discard(agent_id)
+        self._trusted_agents.pop(agent_id, None)
+        logger.warning("Agent BLOCKED: agent=%s", agent_id)
 
-    def trust_agent(self, agent_id: str) -> None:
-        """Add an agent to the global allowlist (bypasses verification)."""
-        self._trusted_agents.add(agent_id)
+    def trust_agent(
+        self,
+        agent_id: str,
+        allowed_receivers: Optional[Set[str]] = None,
+        allowed_payload_types: Optional[Set[str]] = None,
+        valid_until: Optional[float] = None,
+        granted_by: str = "config",
+    ) -> None:
+        """Grant scoped, expiring trust to an agent."""
+        entry = TrustEntry(
+            agent_id=agent_id,
+            allowed_receivers=allowed_receivers,
+            allowed_payload_types=allowed_payload_types,
+            valid_until=valid_until,
+            granted_by=granted_by,
+        )
+        self._trusted_agents[agent_id] = entry
         self._blocked_agents.discard(agent_id)
+        logger.info(
+            "Trust granted: agent=%s receivers=%s types=%s until=%s by=%s",
+            agent_id,
+            allowed_receivers or "any",
+            allowed_payload_types or "any",
+            valid_until or "process-lifetime",
+            granted_by,
+        )
+
+    def revoke_agent(self, agent_id: str, revoked_by: str = "operator") -> bool:
+        """Revoke trust for an agent at runtime. Returns True if agent was trusted."""
+        if agent_id in self._trusted_agents:
+            del self._trusted_agents[agent_id]
+            logger.warning(
+                "Trust REVOKED: agent=%s revoked_by=%s", agent_id, revoked_by
+            )
+            return True
+        return False
 
     def block_pair(self, sender_id: str, receiver_id: str) -> None:
         """Block a specific agent-to-agent communication pair."""
@@ -88,13 +155,29 @@ class TrustBoundary:
         self._blocked_pairs.discard((sender_id, receiver_id))
 
     def is_trusted(self, agent_id: str) -> bool:
-        """Check if an agent is on the global allowlist."""
-        return agent_id in self._trusted_agents
+        """Check if an agent has a valid (non-expired) trust entry."""
+        entry = self._trusted_agents.get(agent_id)
+        if entry is None:
+            return False
+        if not entry.is_valid(time.time()):
+            return False
+        return True
+
+    def _evict_expired_trust(self, now: float) -> None:
+        """Remove expired trust entries to prevent memory leaks."""
+        expired = [
+            aid
+            for aid, entry in self._trusted_agents.items()
+            if not entry.is_valid(now)
+        ]
+        for aid in expired:
+            del self._trusted_agents[aid]
+            logger.info("Trust expired: agent=%s", aid)
 
     def _evict_cold_buckets(self, now: float) -> None:
         """Remove token buckets for pairs idle beyond the TTL."""
         if now - self._last_eviction < 60.0:
-            return  # Only run eviction once per minute
+            return
         self._last_eviction = now
         cold_pairs = [
             pair
@@ -104,13 +187,24 @@ class TrustBoundary:
         for pair in cold_pairs:
             del self._rate_limits[pair]
 
-    def evaluate(self, sender_id: str, receiver_id: str) -> Tuple[bool, Optional[str]]:
-        """
-        Evaluate whether a sender->receiver communication is allowed.
+    def evaluate(
+        self, sender_id: str, receiver_id: str, payload_type: Optional[str] = None
+    ) -> Tuple[bool, Optional[str]]:
+        """Evaluate whether a sender->receiver communication is allowed.
+
+        Args:
+            sender_id: The agent sending the message.
+            receiver_id: The agent receiving the message.
+            payload_type: Optional payload type for scope checking.
 
         Returns:
             Tuple of (is_allowed, rejection_reason).
         """
+        now = time.time()
+
+        # Evict expired trust entries before evaluation
+        self._evict_expired_trust(now)
+
         # Check global blocklist
         if sender_id in self._blocked_agents:
             return False, f"Sender '{sender_id}' is globally blocked"
@@ -125,18 +219,34 @@ class TrustBoundary:
 
         # Default policy check BEFORE rate-limit allocation (prevents map spray)
         if not self.default_allow:
-            if (
-                sender_id not in self._trusted_agents
-                and receiver_id not in self._trusted_agents
-            ):
+            sender_entry = self._trusted_agents.get(sender_id)
+            receiver_entry = self._trusted_agents.get(receiver_id)
+
+            sender_trusted = (
+                sender_entry is not None
+                and sender_entry.is_valid(now)
+                and (
+                    payload_type is None
+                    or sender_entry.allows(receiver_id, payload_type, now)
+                )
+                and (
+                    sender_entry.allowed_receivers is None
+                    or receiver_id in sender_entry.allowed_receivers
+                )
+            )
+            receiver_trusted = receiver_entry is not None and receiver_entry.is_valid(
+                now
+            )
+
+            if not sender_trusted and not receiver_trusted:
                 return (
                     False,
                     f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist",
                 )
 
         # Token-bucket rate limiting (only reached by allowed pairs)
-        now = time.monotonic()
-        self._evict_cold_buckets(now)
+        now_mono = time.monotonic()
+        self._evict_cold_buckets(now_mono)
 
         if pair not in self._rate_limits:
             refill_rate = self.max_requests_per_minute / 60.0
@@ -144,14 +254,63 @@ class TrustBoundary:
                 tokens=float(self.max_requests_per_minute),
                 capacity=float(self.max_requests_per_minute),
                 refill_rate=refill_rate,
-                last_refill=now,
+                last_refill=now_mono,
             )
 
         bucket = self._rate_limits[pair]
-        if not bucket.consume(now):
+        if not bucket.consume(now_mono):
             return False, (
                 f"Rate limit exceeded for {sender_id}->{receiver_id}: "
                 f"{self.max_requests_per_minute}/minute"
             )
 
         return True, None
+
+    def load_from_env(self, env_value: str, granted_by: str = "env") -> None:
+        """Load scoped trust entries from a JSON or comma-separated env var.
+
+        Supports both formats:
+          - Simple:  "agent-a,agent-b" (backward compat, no scope)
+          - JSON:    '[{"agent_id":"agent-a","allowed_receivers":["x"]}]'
+        """
+        if not env_value:
+            return
+
+        stripped = env_value.strip()
+
+        if stripped.startswith("["):
+            try:
+                entries = json.loads(stripped)
+            except json.JSONDecodeError:
+                logger.error("Failed to parse QWED_A2A_TRUSTED_AGENTS as JSON")
+                return
+
+            for item in entries:
+                agent_id = item.get("agent_id", "").strip()
+                if not agent_id:
+                    continue
+                receivers = (
+                    set(item["allowed_receivers"])
+                    if item.get("allowed_receivers")
+                    else None
+                )
+                types = (
+                    set(item["allowed_payload_types"])
+                    if item.get("allowed_payload_types")
+                    else None
+                )
+                valid_until = item.get("valid_until")
+                self.trust_agent(
+                    agent_id=agent_id,
+                    allowed_receivers=receivers,
+                    allowed_payload_types=types,
+                    valid_until=valid_until,
+                    granted_by=granted_by,
+                )
+            return
+
+        # Simple comma-separated format
+        for part in stripped.split(","):
+            agent_id = part.strip()
+            if agent_id:
+                self.trust_agent(agent_id=agent_id, granted_by=granted_by)

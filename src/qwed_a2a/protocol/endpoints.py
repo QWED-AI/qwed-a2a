@@ -24,17 +24,24 @@ _interceptor: A2AVerificationInterceptor | None = None
 
 
 def _load_trusted_agents(interceptor: A2AVerificationInterceptor) -> None:
-    """Load trusted agents from QWED_A2A_TRUSTED_AGENTS environment variable."""
+    """Load trusted agents from QWED_A2A_TRUSTED_AGENTS environment variable.
+
+    Supports comma-separated agent IDs (backward compatible) or a JSON array
+    for scoped trust entries::
+
+        # Simple format (unrestricted scope, no expiry)
+        QWED_A2A_TRUSTED_AGENTS=agent-a,agent-b
+
+        # JSON format (full scope control)
+        QWED_A2A_TRUSTED_AGENTS='[{"agent_id":"agent-a","allowed_receivers":["receiver-x"]}]'
+    """
     trusted_env = os.environ.get("QWED_A2A_TRUSTED_AGENTS", "")
     if trusted_env:
-        for agent in trusted_env.split(","):
-            agent_id = agent.strip()
-            if agent_id:
-                interceptor.trust.trust_agent(agent_id)
-                logger.info("Trusted agent registered")
+        interceptor.trust.load_from_env(trusted_env, granted_by="env")
+        count = len(interceptor.trust._trusted_agents)
         logger.info(
             "Zero-trust boundary initialized with %d trusted agent(s)",
-            len([a.strip() for a in trusted_env.split(",") if a.strip()]),
+            count,
         )
     else:
         logger.warning(

@@ -86,7 +86,9 @@ class A2AVerificationInterceptor:
 
         # --- Step 1: Enforce trust boundary ---
         allowed, rejection_reason = self.trust.evaluate(
-            message.sender_agent_id, message.receiver_agent_id
+            message.sender_agent_id,
+            message.receiver_agent_id,
+            payload_type=message.payload_type.value,
         )
         if not allowed:
             verdict = self._build_verdict(
