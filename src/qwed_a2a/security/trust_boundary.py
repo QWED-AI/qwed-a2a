@@ -413,17 +413,15 @@ class TrustBoundary:
             self._load_json_entries(stripped, granted_by)
             return
 
-        if stripped and stripped[0] == "{":
-            try:
-                json.loads(stripped)
-            except json.JSONDecodeError:
-                logger.error("Skipping QWED_A2A_TRUSTED_AGENTS: invalid JSON value")
-                return
-            else:
-                logger.error(
-                    "Skipping QWED_A2A_TRUSTED_AGENTS: JSON value must be an array"
-                )
-                return
+        try:
+            json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+        else:
+            logger.error(
+                "Skipping QWED_A2A_TRUSTED_AGENTS: JSON value must be an array"
+            )
+            return
 
         for part in stripped.split(","):
             agent_id = part.strip()
