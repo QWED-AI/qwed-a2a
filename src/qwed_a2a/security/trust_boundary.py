@@ -253,6 +253,16 @@ class TrustBoundary:
                 f"Sender '{sender_id}' trust scope does not allow this communication",
             )
 
+        if (
+            receiver_entry is not None
+            and receiver_entry.is_valid(now)
+            and not receiver_trusted
+        ):
+            return (
+                False,
+                f"Receiver '{receiver_id}' trust scope rejects this communication",
+            )
+
         return None
 
     def evaluate(
@@ -403,7 +413,7 @@ class TrustBoundary:
             self._load_json_entries(stripped, granted_by)
             return
 
-        if stripped and stripped[0] in '{"-0123456789tfn':
+        if stripped and stripped[0] == "{":
             try:
                 json.loads(stripped)
             except json.JSONDecodeError:

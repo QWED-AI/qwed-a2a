@@ -273,17 +273,20 @@ class TestTrustBoundaryLoadFromEnv:
             )
         assert not tb.is_trusted("agent-a")
 
-    def test_json_scalar_rejected(self, caplog):
-        """JSON non-array values (null, number) must be rejected, not treated as CSV."""
+    def test_json_object_rejected(self, caplog):
+        """JSON object value must be rejected, not treated as CSV."""
         tb = TrustBoundary(default_allow=False)
         with caplog.at_level(logging.ERROR):
-            tb.load_from_env("null")
-        assert not tb.is_trusted("null")
+            tb.load_from_env('{"agent_id":"agent-a"}')
+        assert not tb.is_trusted("agent-a")
 
-        tb2 = TrustBoundary(default_allow=False)
-        with caplog.at_level(logging.ERROR):
-            tb2.load_from_env("123")
-        assert not tb2.is_trusted("123")
+    def test_csv_names_with_json_like_start_chars(self):
+        """CSV names starting with t, f, n must load correctly (not misdetected as JSON)."""
+        tb = TrustBoundary(default_allow=False)
+        tb.load_from_env("team-agent,finance-service,notification-agent")
+        assert tb.is_trusted("team-agent")
+        assert tb.is_trusted("finance-service")
+        assert tb.is_trusted("notification-agent")
 
 
 class TestTrustBoundaryProperties:
@@ -376,5 +379,21 @@ class TestTrustBoundaryEvaluate:
         # Untrusted sender sending matching payload type to scoped receiver = allowed
         allowed, reason = tb.evaluate(
             "unknown-sender", "receiver-x", payload_type="financial_transaction"
+        )
+        assert allowed
+
+    def test_receiver_scope_violation_even_when_sender_trusted(self):
+        """Receiver scope must block even when sender has valid but scope-unrestricted entry."""
+        tb = TrustBoundary(default_allow=False)
+        tb.trust_agent("sender-a", allowed_receivers={"receiver-x"})
+        tb.trust_agent("receiver-x", allowed_payload_types={"financial_transaction"})
+        # Sender trusts receiver-x, but receiver rejects code_execution
+        allowed, reason = tb.evaluate(
+            "sender-a", "receiver-x", payload_type="code_execution"
+        )
+        assert not allowed
+        # Both sender scope and receiver scope allow this
+        allowed, reason = tb.evaluate(
+            "sender-a", "receiver-x", payload_type="financial_transaction"
         )
         assert allowed
