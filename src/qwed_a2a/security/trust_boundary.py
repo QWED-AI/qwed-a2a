@@ -261,6 +261,11 @@ class TrustBoundary:
                 f"Receiver '{receiver_id}' trust scope rejects this communication",
             )
 
+        if sender_entry is not None and not sender_entry.is_valid(now):
+            sender_entry = None
+        if receiver_entry is not None and not receiver_entry.is_valid(now):
+            receiver_entry = None
+
         if sender_entry is None and receiver_entry is None:
             return (
                 False,
