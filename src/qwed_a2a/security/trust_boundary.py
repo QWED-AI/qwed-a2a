@@ -254,9 +254,19 @@ class TrustBoundary:
         return entry
 
     def _check_trust(
-        self, sender_id: str, receiver_id: str, payload_type: Optional[str], now: float
+        self,
+        sender_id: str,
+        receiver_id: str,
+        payload_type: Optional[str],
+        now: float,
+        enforce_allowlist: bool = True,
     ) -> Optional[Tuple[bool, str]]:
-        """Check trust entries for sender/receiver. Returns rejection tuple or None."""
+        """Check trust entries for sender/receiver. Returns rejection tuple or None.
+
+        Args:
+            enforce_allowlist: If True, reject communication between two unknown
+                agents (the 'Neither in allowlist' check). Scope is always enforced.
+        """
         sender_entry = self._trusted_agents.get(sender_id)
         receiver_entry = self._trusted_agents.get(receiver_id)
 
@@ -278,7 +288,7 @@ class TrustBoundary:
                 f"Receiver '{_redact(receiver_id)}' trust scope rejects this communication",
             )
 
-        if sender_entry is None and receiver_entry is None:
+        if enforce_allowlist and sender_entry is None and receiver_entry is None:
             return (
                 False,
                 f"Neither sender '{_redact(sender_id)}' nor receiver '{_redact(receiver_id)}' is in the trust allowlist",
@@ -318,11 +328,19 @@ class TrustBoundary:
                 f"->{_redact(receiver_id)} is blocked"
             )
 
-        # Default policy check BEFORE rate-limit allocation (prevents map spray)
-        if not self.default_allow:
-            result = self._check_trust(sender_id, receiver_id, payload_type, now)
-            if result is not None:
-                return result
+        # Trust decision BEFORE rate-limit allocation (prevents map spray).
+        # Scope restrictions are always enforced — even when default_allow=True, an
+        # agent with a scoped trust entry should still be limited by that scope.
+        # The "neither in allowlist" check is only applied when default_allow=False.
+        result = self._check_trust(
+            sender_id,
+            receiver_id,
+            payload_type,
+            now,
+            enforce_allowlist=not self.default_allow,
+        )
+        if result is not None:
+            return result
 
         # Evict expired trust entries AFTER the trust decision, so that expired
         # scope-restricted entries remain inspectable during _check_trust.
@@ -461,12 +479,7 @@ class TrustBoundary:
         stripped = env_value.strip()
 
         if stripped.startswith("["):
-            if self._load_json_entries(stripped, granted_by):
-                return
-            logger.error(
-                "QWED_A2A_TRUSTED_AGENTS starts with '[' but is not valid JSON. "
-                'Use a proper JSON array, e.g. \'[{"agent_id":"agent-a"}]\''
-            )
+            self._load_json_entries(stripped, granted_by)
             return
 
         if stripped.startswith("{"):

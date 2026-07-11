@@ -407,3 +407,21 @@ class TestTrustBoundaryEvaluate:
             "sender-a", "receiver-x", payload_type="financial_transaction"
         )
         assert allowed
+
+    def test_default_allow_still_enforces_scope(self):
+        """Scope restrictions must be enforced even when default_allow=True."""
+        tb = TrustBoundary(default_allow=True)
+        tb.trust_agent("agent-a", allowed_payload_types={"financial_transaction"})
+        # Out-of-scope payload type must be blocked even with default_allow=True
+        allowed, reason = tb.evaluate(
+            "agent-a", "any-receiver", payload_type="code_execution"
+        )
+        assert not allowed
+        # Matching payload type is allowed
+        allowed, reason = tb.evaluate(
+            "agent-a", "any-receiver", payload_type="financial_transaction"
+        )
+        assert allowed
+        # Unknown agent pair is allowed (default_allow)
+        allowed, reason = tb.evaluate("unknown-sender", "unknown-receiver")
+        assert allowed
