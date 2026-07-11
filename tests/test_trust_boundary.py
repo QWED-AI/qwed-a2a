@@ -233,17 +233,14 @@ class TestTrustBoundaryLoadFromEnv:
         assert not tb.is_trusted("agent-a")
         assert tb.is_trusted("agent-b")
 
-    def test_string_scope_safely_ignored(self, caplog):
-        """String value for allowed_receivers must be ignored, not split."""
+    def test_string_scope_skips_entry(self, caplog):
+        """String value for allowed_receivers must skip the entry, not split."""
         tb = TrustBoundary(default_allow=False)
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.ERROR):
             tb.load_from_env(
                 '[{"agent_id":"agent-a","allowed_receivers":"receiver-x"}]'
             )
-        assert tb.is_trusted("agent-a")
-        # No receiver scope was set, so any receiver is allowed
-        allowed, reason = tb.evaluate("agent-a", "any-receiver")
-        assert allowed
+        assert not tb.is_trusted("agent-a")
 
     def test_string_valid_until_float_conversion(self):
         """String valid_until must be converted to float, not crash."""

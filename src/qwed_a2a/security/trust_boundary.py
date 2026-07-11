@@ -207,6 +207,53 @@ class TrustBoundary:
         for pair in cold_pairs:
             del self._rate_limits[pair]
 
+    def _check_trust(
+        self, sender_id: str, receiver_id: str, payload_type: Optional[str], now: float
+    ) -> Optional[Tuple[bool, str]]:
+        """Check trust entries for sender/receiver. Returns rejection tuple or None."""
+        sender_entry = self._trusted_agents.get(sender_id)
+        receiver_entry = self._trusted_agents.get(receiver_id)
+
+        sender_trusted = (
+            sender_entry is not None
+            and sender_entry.is_valid(now)
+            and (
+                payload_type is None
+                or sender_entry.allows(receiver_id, payload_type, now)
+            )
+            and (
+                sender_entry.allowed_receivers is None
+                or receiver_id in sender_entry.allowed_receivers
+            )
+        )
+        receiver_trusted = (
+            receiver_entry is not None
+            and receiver_entry.is_valid(now)
+            and (
+                payload_type is None
+                or receiver_entry.allowed_payload_types is None
+                or payload_type in receiver_entry.allowed_payload_types
+            )
+        )
+
+        if not sender_trusted and not receiver_trusted:
+            return (
+                False,
+                f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist",
+            )
+
+        if (
+            sender_entry is not None
+            and sender_entry.is_valid(now)
+            and not sender_trusted
+        ):
+            return (
+                False,
+                f"Sender '{sender_id}' trust scope does not allow this communication",
+            )
+
+        return None
+
     def evaluate(
         self, sender_id: str, receiver_id: str, payload_type: Optional[str] = None
     ) -> Tuple[bool, Optional[str]]:
@@ -239,42 +286,9 @@ class TrustBoundary:
 
         # Default policy check BEFORE rate-limit allocation (prevents map spray)
         if not self.default_allow:
-            sender_entry = self._trusted_agents.get(sender_id)
-            receiver_entry = self._trusted_agents.get(receiver_id)
-
-            sender_trusted = (
-                sender_entry is not None
-                and sender_entry.is_valid(now)
-                and (
-                    payload_type is None
-                    or sender_entry.allows(receiver_id, payload_type, now)
-                )
-                and (
-                    sender_entry.allowed_receivers is None
-                    or receiver_id in sender_entry.allowed_receivers
-                )
-            )
-            receiver_trusted = (
-                receiver_entry is not None
-                and receiver_entry.is_valid(now)
-                and (
-                    payload_type is None
-                    or receiver_entry.allowed_payload_types is None
-                    or payload_type in receiver_entry.allowed_payload_types
-                )
-            )
-
-            if not sender_trusted and not receiver_trusted:
-                return (
-                    False,
-                    f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist",
-                )
-
-            if sender_entry is not None and not sender_trusted:
-                return (
-                    False,
-                    f"Sender '{sender_id}' trust scope does not allow this communication",
-                )
+            result = self._check_trust(sender_id, receiver_id, payload_type, now)
+            if result is not None:
+                return result
 
         # Token-bucket rate limiting (only reached by allowed pairs)
         now_mono = time.monotonic()
@@ -359,8 +373,8 @@ class TrustBoundary:
         if raw is None:
             return None
         if not isinstance(raw, list):
-            logger.warning("Ignoring non-list scope field, treating as unrestricted")
-            return None
+            logger.error("Skipping entry: scope field must be a list")
+            return self._SKIP
         if not all(isinstance(v, str) for v in raw):
             logger.error("Skipping entry: scope list contains non-string values")
             return self._SKIP
