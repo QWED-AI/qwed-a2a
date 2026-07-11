@@ -142,7 +142,8 @@ class TrustBoundary:
         self._trusted_agents[agent_id] = entry
         self._blocked_agents.discard(agent_id)
         logger.info(
-            "Trust granted: receivers=%s types=%s until=%s by=%s",
+            "Trust granted: agent=%s receivers=%s types=%s until=%s by=%s",
+            _redact(agent_id),
             "scoped" if allowed_receivers else "any",
             "scoped" if allowed_payload_types else "any",
             "expires" if valid_until else "process-lifetime",
@@ -259,12 +260,9 @@ class TrustBoundary:
         sender_entry = self._trusted_agents.get(sender_id)
         receiver_entry = self._trusted_agents.get(receiver_id)
 
-        # Receiver scope is checked BEFORE nullification — the receiver's security
-        # policy (what payload types it accepts) persists even after trust expiry.
-        receiver_blocks = self._receiver_scope_blocks(receiver_entry, payload_type)
-
-        # Sender scope is checked AFTER nullification — once a sender's trust
-        # expires, its permissions should not restrict independently-trusted receivers.
+        # Nullify expired entries FIRST — QWED's deterministic philosophy:
+        # when a trust grant expires, ALL its properties (including scope) expire.
+        # An expired agent is treated identically to a never-trusted agent.
         sender_entry = self._nullify_if_expired(sender_entry, now)
         receiver_entry = self._nullify_if_expired(receiver_entry, now)
 
@@ -274,7 +272,7 @@ class TrustBoundary:
                 f"Sender '{sender_id}' trust scope does not allow this communication",
             )
 
-        if receiver_blocks:
+        if self._receiver_scope_blocks(receiver_entry, payload_type):
             return (
                 False,
                 f"Receiver '{receiver_id}' trust scope rejects this communication",
