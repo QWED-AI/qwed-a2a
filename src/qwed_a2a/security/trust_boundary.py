@@ -142,8 +142,7 @@ class TrustBoundary:
         self._trusted_agents[agent_id] = entry
         self._blocked_agents.discard(agent_id)
         logger.info(
-            "Trust granted: agent=%s receivers=%s types=%s until=%s by=%s",
-            _redact(agent_id),
+            "Trust granted: receivers=%s types=%s until=%s by=%s",
             "scoped" if allowed_receivers else "any",
             "scoped" if allowed_payload_types else "any",
             "expires" if valid_until else "process-lifetime",
@@ -210,9 +209,41 @@ class TrustBoundary:
             del self._rate_limits[pair]
 
     @staticmethod
-    def _entry_rejects(entry, now, trusted):
-        """True if entry exists, is valid, but scope rejects."""
-        return entry is not None and entry.is_valid(now) and not trusted
+    def _sender_scope_blocks(entry, receiver_id, payload_type):
+        """True if sender entry exists and its scope rejects the communication.
+
+        Checks both allowed_receivers and allowed_payload_types independent of validity.
+        """
+        if entry is None:
+            return False
+        if (
+            entry.allowed_receivers is not None
+            and receiver_id not in entry.allowed_receivers
+        ):
+            return True
+        if (
+            payload_type is not None
+            and entry.allowed_payload_types is not None
+            and payload_type not in entry.allowed_payload_types
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _receiver_scope_blocks(entry, payload_type):
+        """True if receiver entry exists and its scope rejects the communication.
+
+        Checks allowed_payload_types independent of validity.
+        """
+        if entry is None:
+            return False
+        if (
+            payload_type is not None
+            and entry.allowed_payload_types is not None
+            and payload_type not in entry.allowed_payload_types
+        ):
+            return True
+        return False
 
     @staticmethod
     def _nullify_if_expired(entry, now):
@@ -227,6 +258,20 @@ class TrustBoundary:
         """Check trust entries for sender/receiver. Returns rejection tuple or None."""
         sender_entry = self._trusted_agents.get(sender_id)
         receiver_entry = self._trusted_agents.get(receiver_id)
+
+        # Scope rejection is checked against ALL entries, including expired ones.
+        # This prevents expired scope-restricted entries from silently allowing
+        # communication that violates their original constraints.
+        if self._sender_scope_blocks(sender_entry, receiver_id, payload_type):
+            return (
+                False,
+                f"Sender '{sender_id}' trust scope does not allow this communication",
+            )
+        if self._receiver_scope_blocks(receiver_entry, payload_type):
+            return (
+                False,
+                f"Receiver '{receiver_id}' trust scope rejects this communication",
+            )
 
         sender_trusted = (
             sender_entry is not None
@@ -249,18 +294,6 @@ class TrustBoundary:
                 or payload_type in receiver_entry.allowed_payload_types
             )
         )
-
-        if self._entry_rejects(sender_entry, now, sender_trusted):
-            return (
-                False,
-                f"Sender '{sender_id}' trust scope does not allow this communication",
-            )
-
-        if self._entry_rejects(receiver_entry, now, receiver_trusted):
-            return (
-                False,
-                f"Receiver '{receiver_id}' trust scope rejects this communication",
-            )
 
         sender_entry = self._nullify_if_expired(sender_entry, now)
         receiver_entry = self._nullify_if_expired(receiver_entry, now)
@@ -422,16 +455,14 @@ class TrustBoundary:
             return
 
         try:
-            parsed = json.loads(stripped)
+            json.loads(stripped)
         except json.JSONDecodeError:
             pass
         else:
-            if isinstance(parsed, (dict, list)):
-                logger.error(
-                    "Skipping QWED_A2A_TRUSTED_AGENTS: JSON value must be an array"
-                )
-                return
-            # JSON scalars (strings, numbers, booleans, null) fall through to CSV path
+            logger.error(
+                "Skipping QWED_A2A_TRUSTED_AGENTS: JSON value must be an array"
+            )
+            return
 
         for part in stripped.split(","):
             agent_id = part.strip()
