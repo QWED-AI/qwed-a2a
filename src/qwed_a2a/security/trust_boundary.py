@@ -263,6 +263,15 @@ class TrustBoundary:
     ) -> Optional[Tuple[bool, str]]:
         """Check trust entries for sender/receiver. Returns rejection tuple or None.
 
+        QWED fail-closed philosophy:
+        - Receiver scope survives expiry: the receiver's security policy (what
+          payload types it accepts) persists even after its trust grant expires.
+          This prevents previously-blocked traffic from flowing when the only
+          protection was the receiver's scoped entry.
+        - Sender scope expires with the entry: once a sender's trust expires,
+          its restrictions should not block independently-trusted receivers.
+        - Expired entries don't count toward the allowlist gate.
+
         Args:
             enforce_allowlist: If True, reject communication between two unknown
                 agents (the 'Neither in allowlist' check). Scope is always enforced.
@@ -270,11 +279,14 @@ class TrustBoundary:
         sender_entry = self._trusted_agents.get(sender_id)
         receiver_entry = self._trusted_agents.get(receiver_id)
 
-        # Nullify expired entries FIRST — QWED's deterministic philosophy:
-        # when a trust grant expires, ALL its properties (including scope) expire.
-        # An expired agent is treated identically to a never-trusted agent.
+        # Receiver scope is checked on the ORIGINAL entry — fail-closed.
+        # An expired receiver's payload-type restrictions still block.
+        receiver_blocks = self._receiver_scope_blocks(receiver_entry, payload_type)
+
+        # Sender scope is checked AFTER nullification — expired sender
+        # permissions should not restrict a valid receiver.
         sender_entry = self._nullify_if_expired(sender_entry, now)
-        receiver_entry = self._nullify_if_expired(receiver_entry, now)
+        receiver_entry_for_allowlist = self._nullify_if_expired(receiver_entry, now)
 
         if self._sender_scope_blocks(sender_entry, receiver_id, payload_type):
             return (
@@ -282,13 +294,17 @@ class TrustBoundary:
                 f"Sender '{_redact(sender_id)}' trust scope does not allow this communication",
             )
 
-        if self._receiver_scope_blocks(receiver_entry, payload_type):
+        if receiver_blocks:
             return (
                 False,
                 f"Receiver '{_redact(receiver_id)}' trust scope rejects this communication",
             )
 
-        if enforce_allowlist and sender_entry is None and receiver_entry is None:
+        if (
+            enforce_allowlist
+            and sender_entry is None
+            and receiver_entry_for_allowlist is None
+        ):
             return (
                 False,
                 f"Neither sender '{_redact(sender_id)}' nor receiver '{_redact(receiver_id)}' is in the trust allowlist",
