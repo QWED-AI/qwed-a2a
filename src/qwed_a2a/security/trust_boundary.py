@@ -273,28 +273,6 @@ class TrustBoundary:
                 f"Receiver '{receiver_id}' trust scope rejects this communication",
             )
 
-        sender_trusted = (
-            sender_entry is not None
-            and sender_entry.is_valid(now)
-            and (
-                payload_type is None
-                or sender_entry.allows(receiver_id, payload_type, now)
-            )
-            and (
-                sender_entry.allowed_receivers is None
-                or receiver_id in sender_entry.allowed_receivers
-            )
-        )
-        receiver_trusted = (
-            receiver_entry is not None
-            and receiver_entry.is_valid(now)
-            and (
-                payload_type is None
-                or receiver_entry.allowed_payload_types is None
-                or payload_type in receiver_entry.allowed_payload_types
-            )
-        )
-
         sender_entry = self._nullify_if_expired(sender_entry, now)
         receiver_entry = self._nullify_if_expired(receiver_entry, now)
 
