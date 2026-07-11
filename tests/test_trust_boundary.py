@@ -207,7 +207,7 @@ class TestTrustBoundaryLoadFromEnv:
         """JSON format with valid_until must create expiring trust."""
         tb = TrustBoundary(default_allow=False)
         tb.load_from_env(
-            f'[{{"agent_id":"agent-a","valid_until":{time.time() - 1.0}}}]'
+            '[{"agent_id":"agent-a","valid_until":1.0}]'
         )
         allowed, reason = tb.evaluate("agent-a", "receiver-x")
         assert not allowed
@@ -251,7 +251,9 @@ class TestTrustBoundaryLoadFromEnv:
         tb.load_from_env(
             '[{"agent_id":"agent-a","valid_until":"0.1"}]'
         )
-        # Should not crash; entry is expired
+        # Entry was created with valid_until=0.1
+        assert tb.is_trusted("agent-a", now=0.0)
+        # Entry is expired after 0.1
         allowed, reason = tb.evaluate("agent-a", "receiver-x")
         assert not allowed
 

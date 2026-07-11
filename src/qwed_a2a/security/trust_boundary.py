@@ -13,7 +13,6 @@ from typing import Dict, Optional, Set, Tuple
 
 from qwed_a2a.utils.telemetry import logger
 
-
 # CodeQL wants sanitization before logging identifiers that come from env vars.
 # Agent IDs in QWED are opaque — redact them so the original value is unrecoverable.
 
@@ -271,6 +270,12 @@ class TrustBoundary:
                     f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist",
                 )
 
+            if sender_entry is not None and not sender_trusted:
+                return (
+                    False,
+                    f"Sender '{sender_id}' trust scope does not allow this communication",
+                )
+
         # Token-bucket rate limiting (only reached by allowed pairs)
         now_mono = time.monotonic()
         self._evict_cold_buckets(now_mono)
@@ -297,8 +302,9 @@ class TrustBoundary:
 
     @property
     def trusted_agent_count(self) -> int:
-        """Return the number of currently trusted agents."""
-        return len(self._trusted_agents)
+        """Return the number of currently trusted (non-expired) agents."""
+        now = time.time()
+        return sum(1 for e in self._trusted_agents.values() if e.is_valid(now))
 
     def _load_json_entries(self, env_value: str, granted_by: str) -> None:
         """Parse and load trust entries from a JSON array string."""
