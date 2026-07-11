@@ -238,6 +238,20 @@ class TestTrustBoundaryLoadFromEnv:
             )
         assert not tb.is_trusted("agent-a")
 
+    def test_empty_scope_list_skips_entry(self, caplog):
+        """Empty list for allowed_receivers must skip entry, not silently block."""
+        tb = TrustBoundary(default_allow=False)
+        with caplog.at_level(logging.ERROR):
+            tb.load_from_env('[{"agent_id":"agent-a","allowed_receivers":[]}]')
+        assert not tb.is_trusted("agent-a")
+
+    def test_empty_payload_types_list_skips_entry(self, caplog):
+        """Empty list for allowed_payload_types must skip entry."""
+        tb = TrustBoundary(default_allow=False)
+        with caplog.at_level(logging.ERROR):
+            tb.load_from_env('[{"agent_id":"agent-a","allowed_payload_types":[]}]')
+        assert not tb.is_trusted("agent-a")
+
     def test_string_valid_until_float_conversion(self):
         """String valid_until must be converted to float, not crash."""
         tb = TrustBoundary(default_allow=False)

@@ -416,6 +416,9 @@ class TrustBoundary:
         if not isinstance(raw, list):
             logger.error("Skipping entry: scope field must be a list")
             return self._SKIP
+        if not raw:
+            logger.error("Skipping entry: scope list must not be empty")
+            return self._SKIP
         if not all(isinstance(v, str) for v in raw):
             logger.error("Skipping entry: scope list contains non-string values")
             return self._SKIP
