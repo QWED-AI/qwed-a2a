@@ -115,7 +115,7 @@ class TrustBoundary:
         # Eviction threshold: remove idle buckets after this many seconds
         self._eviction_ttl: float = 300.0  # 5 minutes
         self._last_eviction: float = 0.0
-        self._last_trust_eviction_mono: float = 0.0
+        self._last_trust_eviction_mono: float = -float("inf")
 
     def block_agent(self, agent_id: str) -> None:
         """Add an agent to the global blocklist."""
@@ -305,15 +305,18 @@ class TrustBoundary:
         # Note: _evict_expired_trust is called AFTER _check_trust so that expired
         # scope-restricted entries remain inspectable during the trust decision.
         if sender_id in self._blocked_agents:
-            return False, f"Sender '{sender_id}' is globally blocked"
+            return False, f"Sender '{_redact(sender_id)}' is globally blocked"
 
         if receiver_id in self._blocked_agents:
-            return False, f"Receiver '{receiver_id}' is globally blocked"
+            return False, f"Receiver '{_redact(receiver_id)}' is globally blocked"
 
         # Check pair-level block
         pair = (sender_id, receiver_id)
         if pair in self._blocked_pairs:
-            return False, f"Communication pair {sender_id}->{receiver_id} is blocked"
+            return False, (
+                f"Communication pair {_redact(sender_id)}"
+                f"->{_redact(receiver_id)} is blocked"
+            )
 
         # Default policy check BEFORE rate-limit allocation (prevents map spray)
         if not self.default_allow:
@@ -341,7 +344,8 @@ class TrustBoundary:
         bucket = self._rate_limits[pair]
         if not bucket.consume(now_mono):
             return False, (
-                f"Rate limit exceeded for {sender_id}->{receiver_id}: "
+                f"Rate limit exceeded for {_redact(sender_id)}"
+                f"->{_redact(receiver_id)}: "
                 f"{self.max_requests_per_minute}/minute"
             )
 
@@ -358,15 +362,16 @@ class TrustBoundary:
         """Count entries valid at the given time."""
         return sum(1 for e in self._trusted_agents.values() if e.is_valid(now))
 
-    def _load_json_entries(self, env_value: str, granted_by: str) -> None:
-        """Parse and load trust entries from a JSON array string."""
+    def _load_json_entries(self, env_value: str, granted_by: str) -> bool:
+        """Parse and load trust entries from a JSON array string. Returns success."""
         try:
             entries = json.loads(env_value)
         except json.JSONDecodeError:
             logger.error("Failed to parse QWED_A2A_TRUSTED_AGENTS as JSON")
-            return
+            return False
         for item in entries:
             self._load_json_entry(item, granted_by)
+        return True
 
     @staticmethod
     def _parse_valid_until(raw):
@@ -453,7 +458,12 @@ class TrustBoundary:
         stripped = env_value.strip()
 
         if stripped.startswith("["):
-            self._load_json_entries(stripped, granted_by)
+            if self._load_json_entries(stripped, granted_by):
+                return
+            logger.error(
+                "QWED_A2A_TRUSTED_AGENTS starts with '[' but is not valid JSON. "
+                'Use a proper JSON array, e.g. \'[{"agent_id":"agent-a"}]\''
+            )
             return
 
         if stripped.startswith("{"):
