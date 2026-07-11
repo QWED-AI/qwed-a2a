@@ -264,6 +264,27 @@ class TestTrustBoundaryLoadFromEnv:
         assert not tb.is_trusted("agent-a")
         # Entry was skipped, agent is not trusted
 
+    def test_non_finite_valid_until_skips_entry(self, caplog):
+        """NaN/Infinity valid_until must skip entry."""
+        tb = TrustBoundary(default_allow=False)
+        with caplog.at_level(logging.ERROR):
+            tb.load_from_env(
+                '[{"agent_id":"agent-a","valid_until":"NaN"}]'
+            )
+        assert not tb.is_trusted("agent-a")
+
+    def test_json_scalar_rejected(self, caplog):
+        """JSON non-array values (null, number) must be rejected, not treated as CSV."""
+        tb = TrustBoundary(default_allow=False)
+        with caplog.at_level(logging.ERROR):
+            tb.load_from_env("null")
+        assert not tb.is_trusted("null")
+
+        tb2 = TrustBoundary(default_allow=False)
+        with caplog.at_level(logging.ERROR):
+            tb2.load_from_env("123")
+        assert not tb2.is_trusted("123")
+
 
 class TestTrustBoundaryProperties:
     """Tests for public properties."""

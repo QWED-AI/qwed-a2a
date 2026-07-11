@@ -359,6 +359,12 @@ class TrustBoundary:
                 except (ValueError, TypeError):
                     logger.error("Skipping entry with non-numeric valid_until")
                     return
+            if valid_until != valid_until or valid_until in (
+                float("inf"),
+                float("-inf"),
+            ):
+                logger.error("Skipping entry with non-finite valid_until")
+                return
 
         self.trust_agent(
             agent_id=agent_id,
@@ -395,6 +401,17 @@ class TrustBoundary:
         if stripped.startswith("["):
             self._load_json_entries(stripped, granted_by)
             return
+
+        if stripped and stripped[0] in '{"-0123456789tfn':
+            try:
+                json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+            else:
+                logger.error(
+                    "Skipping QWED_A2A_TRUSTED_AGENTS: JSON value must be an array"
+                )
+                return
 
         for part in stripped.split(","):
             agent_id = part.strip()
