@@ -142,8 +142,7 @@ class TrustBoundary:
         self._trusted_agents[agent_id] = entry
         self._blocked_agents.discard(agent_id)
         logger.info(
-            "Trust granted: agent=%s receivers=%s types=%s until=%s by=%s",
-            _redact(agent_id),
+            "Trust granted: receivers=%s types=%s until=%s by=%s",
             "scoped" if allowed_receivers else "any",
             "scoped" if allowed_payload_types else "any",
             "expires" if valid_until else "process-lifetime",
@@ -391,6 +390,9 @@ class TrustBoundary:
         if raw_until is not None:
             if isinstance(raw_until, (int, float)) and not isinstance(raw_until, bool):
                 valid_until = raw_until
+            elif isinstance(raw_until, bool):
+                logger.error("Skipping entry with non-numeric valid_until")
+                return
             else:
                 try:
                     valid_until = float(raw_until)

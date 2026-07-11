@@ -8,8 +8,6 @@ Covers: TrustEntry, trust_agent() with scope/TTL, revoke_agent(),
 import logging
 import time
 
-import pytest
-
 from qwed_a2a.security.trust_boundary import TrustBoundary, TrustEntry
 
 
@@ -263,10 +261,11 @@ class TestTrustBoundaryLoadFromEnv:
         assert not allowed
 
     def test_boolean_valid_until_rejected(self, caplog):
-        """Boolean valid_until must be rejected, not treated as 0 or 1."""
+        """Boolean valid_until must be rejected with error, not treated as 0 or 1."""
         tb = TrustBoundary(default_allow=False)
         with caplog.at_level(logging.ERROR):
             tb.load_from_env('[{"agent_id":"agent-a","valid_until":true}]')
+            assert "non-numeric valid_until" in caplog.text
         assert not tb.is_trusted("agent-a")
 
     def test_non_numeric_valid_until_skips_entry(self, caplog):
