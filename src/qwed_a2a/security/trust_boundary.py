@@ -369,9 +369,11 @@ class TrustBoundary:
         except json.JSONDecodeError:
             logger.error("Failed to parse QWED_A2A_TRUSTED_AGENTS as JSON")
             return False
+        count = 0
         for item in entries:
-            self._load_json_entry(item, granted_by)
-        return True
+            if self._load_json_entry(item, granted_by):
+                count += 1
+        return count > 0
 
     @staticmethod
     def _parse_valid_until(raw):
@@ -400,27 +402,27 @@ class TrustBoundary:
             return None, True
         return val, False
 
-    def _load_json_entry(self, item, granted_by: str) -> None:
-        """Parse and load a single JSON trust entry. Skips invalid entries."""
+    def _load_json_entry(self, item, granted_by: str) -> bool:
+        """Parse and load a single JSON trust entry. Returns True if loaded."""
         if not isinstance(item, dict):
             logger.error("Skipping non-object entry in JSON trust list")
-            return
+            return False
         raw_id = item.get("agent_id")
         if not isinstance(raw_id, str) or not raw_id.strip():
             logger.error("Skipping entry with missing or non-string agent_id")
-            return
+            return False
         agent_id = raw_id.strip()
 
         receivers = self._parse_scope_list(item.get("allowed_receivers"))
         if receivers is self._SKIP:
-            return
+            return False
         types = self._parse_scope_list(item.get("allowed_payload_types"))
         if types is self._SKIP:
-            return
+            return False
 
         valid_until, skip = self._parse_valid_until(item.get("valid_until"))
         if skip:
-            return
+            return False
 
         self.trust_agent(
             agent_id=agent_id,
@@ -429,6 +431,7 @@ class TrustBoundary:
             valid_until=valid_until,
             granted_by=granted_by,
         )
+        return True
 
     def _parse_scope_list(self, raw):
         """Validate and convert a scope list. Returns set, None, or _SKIP."""
