@@ -7,6 +7,7 @@ with automatic eviction of cold pairs.
 """
 
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set, Tuple
@@ -317,7 +318,10 @@ class TrustBoundary:
     @property
     def trusted_agent_count(self) -> int:
         """Return the number of currently trusted (non-expired) agents."""
-        now = time.time()
+        return self._count_trusted_agents(time.time())
+
+    def _count_trusted_agents(self, now: float) -> int:
+        """Count entries valid at the given time."""
         return sum(1 for e in self._trusted_agents.values() if e.is_valid(now))
 
     def _load_json_entries(self, env_value: str, granted_by: str) -> None:
@@ -359,10 +363,7 @@ class TrustBoundary:
                 except (ValueError, TypeError):
                     logger.error("Skipping entry with non-numeric valid_until")
                     return
-            if valid_until != valid_until or valid_until in (
-                float("inf"),
-                float("-inf"),
-            ):
+            if not math.isfinite(valid_until):
                 logger.error("Skipping entry with non-finite valid_until")
                 return
 
@@ -406,7 +407,8 @@ class TrustBoundary:
             try:
                 json.loads(stripped)
             except json.JSONDecodeError:
-                pass
+                logger.error("Skipping QWED_A2A_TRUSTED_AGENTS: invalid JSON value")
+                return
             else:
                 logger.error(
                     "Skipping QWED_A2A_TRUSTED_AGENTS: JSON value must be an array"
