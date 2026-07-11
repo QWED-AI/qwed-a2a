@@ -38,7 +38,7 @@ def _load_trusted_agents(interceptor: A2AVerificationInterceptor) -> None:
     trusted_env = os.environ.get("QWED_A2A_TRUSTED_AGENTS", "")
     if trusted_env:
         interceptor.trust.load_from_env(trusted_env, granted_by="env")
-        count = len(interceptor.trust._trusted_agents)
+        count = interceptor.trust.trusted_agent_count
         logger.info(
             "Zero-trust boundary initialized with %d trusted agent(s)",
             count,

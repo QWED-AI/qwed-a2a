@@ -225,6 +225,76 @@ class TestTrustBoundaryLoadFromEnv:
             tb.load_from_env("[invalid")
             assert "Failed to parse" in caplog.text
 
+    def test_non_object_json_entries_skipped(self, caplog):
+        """Non-dict entries in JSON array must be skipped, not crash."""
+        tb = TrustBoundary(default_allow=False)
+        with caplog.at_level(logging.WARNING):
+            tb.load_from_env('["agent-a", {"agent_id":"agent-b"}]')
+        assert not tb.is_trusted("agent-a")
+        assert tb.is_trusted("agent-b")
+
+    def test_string_scope_safely_ignored(self, caplog):
+        """String value for allowed_receivers must be ignored, not split."""
+        tb = TrustBoundary(default_allow=False)
+        with caplog.at_level(logging.WARNING):
+            tb.load_from_env(
+                '[{"agent_id":"agent-a","allowed_receivers":"receiver-x"}]'
+            )
+        assert tb.is_trusted("agent-a")
+        # No receiver scope was set, so any receiver is allowed
+        allowed, reason = tb.evaluate("agent-a", "any-receiver")
+        assert allowed
+
+    def test_string_valid_until_float_conversion(self):
+        """String valid_until must be converted to float, not crash."""
+        tb = TrustBoundary(default_allow=False)
+        tb.load_from_env(
+            '[{"agent_id":"agent-a","valid_until":"0.1"}]'
+        )
+        # Should not crash; entry is expired
+        allowed, reason = tb.evaluate("agent-a", "receiver-x")
+        assert not allowed
+
+    def test_non_numeric_valid_until_ignored(self, caplog):
+        """Non-numeric string valid_until must be ignored, not crash."""
+        tb = TrustBoundary(default_allow=False)
+        with caplog.at_level(logging.ERROR):
+            tb.load_from_env(
+                '[{"agent_id":"agent-a","valid_until":"not-a-number"}]'
+            )
+        assert tb.is_trusted("agent-a")
+        # No valid_until was set, so entry is valid
+        allowed, reason = tb.evaluate("agent-a", "receiver-x")
+        assert allowed
+
+
+class TestTrustBoundaryProperties:
+    """Tests for public properties."""
+
+    def test_trusted_agent_count(self):
+        """trusted_agent_count must reflect number of trusted agents."""
+        tb = TrustBoundary(default_allow=False)
+        assert tb.trusted_agent_count == 0
+        tb.trust_agent("agent-a")
+        assert tb.trusted_agent_count == 1
+        tb.trust_agent("agent-b")
+        assert tb.trusted_agent_count == 2
+        tb.revoke_agent("agent-a")
+        assert tb.trusted_agent_count == 1
+
+    def test_is_trusted_with_explicit_now(self):
+        """is_trusted() must accept optional now parameter."""
+        tb = TrustBoundary(default_allow=False)
+        tb.trust_agent("agent-a", valid_until=100.0)
+        assert tb.is_trusted("agent-a", now=50.0)
+        assert not tb.is_trusted("agent-a", now=200.0)
+
+    def test_is_trusted_without_now_defaults_to_wall_clock(self):
+        """is_trusted() without now must use time.time()."""
+        tb = TrustBoundary(default_allow=False)
+        tb.trust_agent("agent-a")
+        assert tb.is_trusted("agent-a")
+
 
 class TestTrustBoundaryEvaluate:
     """Tests for the evaluate() method with scoped trust."""
@@ -274,4 +344,19 @@ class TestTrustBoundaryEvaluate:
         tb.trust_agent("agent-a", allowed_payload_types={"financial_transaction"})
         # When payload_type is None, type scope is bypassed → allowed
         allowed, reason = tb.evaluate("agent-a", "receiver-x")
+        assert allowed
+
+    def test_scoped_receiver_with_untrusted_sender(self):
+        """Receiver scope must also be enforced when receiver_trusted."""
+        tb = TrustBoundary(default_allow=False)
+        tb.trust_agent("receiver-x", allowed_payload_types={"financial_transaction"})
+        # Untrusted sender sending non-matching payload type to scoped receiver = blocked
+        allowed, reason = tb.evaluate(
+            "unknown-sender", "receiver-x", payload_type="code_execution"
+        )
+        assert not allowed
+        # Untrusted sender sending matching payload type to scoped receiver = allowed
+        allowed, reason = tb.evaluate(
+            "unknown-sender", "receiver-x", payload_type="financial_transaction"
+        )
         assert allowed

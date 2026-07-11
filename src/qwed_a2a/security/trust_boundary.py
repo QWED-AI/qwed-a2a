@@ -113,6 +113,7 @@ class TrustBoundary:
         # Eviction threshold: remove idle buckets after this many seconds
         self._eviction_ttl: float = 300.0  # 5 minutes
         self._last_eviction: float = 0.0
+        self._last_trust_eviction: float = 0.0
 
     def block_agent(self, agent_id: str) -> None:
         """Add an agent to the global blocklist."""
@@ -168,17 +169,22 @@ class TrustBoundary:
         """Unblock a specific agent pair."""
         self._blocked_pairs.discard((sender_id, receiver_id))
 
-    def is_trusted(self, agent_id: str) -> bool:
+    def is_trusted(self, agent_id: str, now: Optional[float] = None) -> bool:
         """Check if an agent has a valid (non-expired) trust entry."""
+        if now is None:
+            now = time.time()
         entry = self._trusted_agents.get(agent_id)
         if entry is None:
             return False
-        if not entry.is_valid(time.time()):
+        if not entry.is_valid(now):
             return False
         return True
 
     def _evict_expired_trust(self, now: float) -> None:
         """Remove expired trust entries to prevent memory leaks."""
+        if now - self._last_trust_eviction < 60.0:
+            return
+        self._last_trust_eviction = now
         expired = [
             aid
             for aid, entry in self._trusted_agents.items()
@@ -248,8 +254,14 @@ class TrustBoundary:
                     or receiver_id in sender_entry.allowed_receivers
                 )
             )
-            receiver_trusted = receiver_entry is not None and receiver_entry.is_valid(
-                now
+            receiver_trusted = (
+                receiver_entry is not None
+                and receiver_entry.is_valid(now)
+                and (
+                    payload_type is None
+                    or receiver_entry.allowed_payload_types is None
+                    or payload_type in receiver_entry.allowed_payload_types
+                )
             )
 
             if not sender_trusted and not receiver_trusted:
@@ -280,6 +292,11 @@ class TrustBoundary:
 
         return True, None
 
+    @property
+    def trusted_agent_count(self) -> int:
+        """Return the number of currently trusted agents."""
+        return len(self._trusted_agents)
+
     def _load_json_entries(self, env_value: str, granted_by: str) -> None:
         """Parse and load trust entries from a JSON array string."""
         try:
@@ -289,20 +306,48 @@ class TrustBoundary:
             return
 
         for item in entries:
-            agent_id = item.get("agent_id", "").strip()
-            if not agent_id:
+            if not isinstance(item, dict):
+                logger.error("Skipping non-object entry in JSON trust list")
                 continue
-            receivers = (
-                set(item["allowed_receivers"])
-                if item.get("allowed_receivers")
-                else None
-            )
-            types = (
-                set(item["allowed_payload_types"])
-                if item.get("allowed_payload_types")
-                else None
-            )
+            raw_id = item.get("agent_id")
+            if not isinstance(raw_id, str) or not raw_id.strip():
+                logger.error("Skipping entry with missing or non-string agent_id")
+                continue
+            agent_id = raw_id.strip()
+
+            raw_receivers = item.get("allowed_receivers")
+            receivers = None
+            if raw_receivers is not None:
+                if isinstance(raw_receivers, list):
+                    receivers = set(raw_receivers)
+                else:
+                    logger.warning(
+                        "Ignoring non-list allowed_receivers for agent=%s",
+                        _safe(agent_id),
+                    )
+
+            raw_types = item.get("allowed_payload_types")
+            types = None
+            if raw_types is not None:
+                if isinstance(raw_types, list):
+                    types = set(raw_types)
+                else:
+                    logger.warning(
+                        "Ignoring non-list allowed_payload_types for agent=%s",
+                        _safe(agent_id),
+                    )
+
             valid_until = item.get("valid_until")
+            if valid_until is not None and not isinstance(valid_until, (int, float)):
+                try:
+                    valid_until = float(valid_until)
+                except (ValueError, TypeError):
+                    logger.error(
+                        "Ignoring non-numeric valid_until for agent=%s",
+                        _safe(agent_id),
+                    )
+                    valid_until = None
+
             self.trust_agent(
                 agent_id=agent_id,
                 allowed_receivers=receivers,
