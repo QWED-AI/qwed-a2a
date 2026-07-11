@@ -115,7 +115,7 @@ class TrustBoundary:
         # Eviction threshold: remove idle buckets after this many seconds
         self._eviction_ttl: float = 300.0  # 5 minutes
         self._last_eviction: float = 0.0
-        self._last_trust_eviction: float = 0.0
+        self._last_trust_eviction_mono: float = 0.0
 
     def block_agent(self, agent_id: str) -> None:
         """Add an agent to the global blocklist."""
@@ -182,9 +182,10 @@ class TrustBoundary:
 
     def _evict_expired_trust(self, now: float) -> None:
         """Remove expired trust entries to prevent memory leaks."""
-        if now - self._last_trust_eviction < 60.0:
+        mono = time.monotonic()
+        if mono - self._last_trust_eviction_mono < 60.0:
             return
-        self._last_trust_eviction = now
+        self._last_trust_eviction_mono = mono
         expired = [
             aid
             for aid, entry in self._trusted_agents.items()
@@ -268,19 +269,19 @@ class TrustBoundary:
         if self._sender_scope_blocks(sender_entry, receiver_id, payload_type):
             return (
                 False,
-                f"Sender '{sender_id}' trust scope does not allow this communication",
+                f"Sender '{_redact(sender_id)}' trust scope does not allow this communication",
             )
 
         if self._receiver_scope_blocks(receiver_entry, payload_type):
             return (
                 False,
-                f"Receiver '{receiver_id}' trust scope rejects this communication",
+                f"Receiver '{_redact(receiver_id)}' trust scope rejects this communication",
             )
 
         if sender_entry is None and receiver_entry is None:
             return (
                 False,
-                f"Neither sender '{sender_id}' nor receiver '{receiver_id}' is in the trust allowlist",
+                f"Neither sender '{_redact(sender_id)}' nor receiver '{_redact(receiver_id)}' is in the trust allowlist",
             )
 
         return None
@@ -367,6 +368,33 @@ class TrustBoundary:
         for item in entries:
             self._load_json_entry(item, granted_by)
 
+    @staticmethod
+    def _parse_valid_until(raw):
+        """Parse and validate valid_until from raw JSON value. Returns (value, skip).
+
+        Returns (None, False) when raw is None (no expiry).
+        Returns (None, True) when the value is invalid and the entry should be skipped.
+        """
+        if raw is None:
+            return None, False
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            if not math.isfinite(raw):
+                logger.error("Skipping entry with non-finite valid_until")
+                return None, True
+            return raw, False
+        if isinstance(raw, bool):
+            logger.error("Skipping entry with non-numeric valid_until")
+            return None, True
+        try:
+            val = float(raw)
+        except (ValueError, TypeError):
+            logger.error("Skipping entry with non-numeric valid_until")
+            return None, True
+        if not math.isfinite(val):
+            logger.error("Skipping entry with non-finite valid_until")
+            return None, True
+        return val, False
+
     def _load_json_entry(self, item, granted_by: str) -> None:
         """Parse and load a single JSON trust entry. Skips invalid entries."""
         if not isinstance(item, dict):
@@ -385,23 +413,9 @@ class TrustBoundary:
         if types is self._SKIP:
             return
 
-        raw_until = item.get("valid_until")
-        valid_until = None
-        if raw_until is not None:
-            if isinstance(raw_until, (int, float)) and not isinstance(raw_until, bool):
-                valid_until = raw_until
-            elif isinstance(raw_until, bool):
-                logger.error("Skipping entry with non-numeric valid_until")
-                return
-            else:
-                try:
-                    valid_until = float(raw_until)
-                except (ValueError, TypeError):
-                    logger.error("Skipping entry with non-numeric valid_until")
-                    return
-            if not math.isfinite(valid_until):
-                logger.error("Skipping entry with non-finite valid_until")
-                return
+        valid_until, skip = self._parse_valid_until(item.get("valid_until"))
+        if skip:
+            return
 
         self.trust_agent(
             agent_id=agent_id,
