@@ -255,17 +255,15 @@ class TestTrustBoundaryLoadFromEnv:
         allowed, reason = tb.evaluate("agent-a", "receiver-x")
         assert not allowed
 
-    def test_non_numeric_valid_until_ignored(self, caplog):
-        """Non-numeric string valid_until must be ignored, not crash."""
+    def test_non_numeric_valid_until_skips_entry(self, caplog):
+        """Non-numeric string valid_until must skip entry entirely, not crash."""
         tb = TrustBoundary(default_allow=False)
         with caplog.at_level(logging.ERROR):
             tb.load_from_env(
                 '[{"agent_id":"agent-a","valid_until":"not-a-number"}]'
             )
-        assert tb.is_trusted("agent-a")
-        # No valid_until was set, so entry is valid
-        allowed, reason = tb.evaluate("agent-a", "receiver-x")
-        assert allowed
+        assert not tb.is_trusted("agent-a")
+        # Entry was skipped, agent is not trusted
 
 
 class TestTrustBoundaryProperties:

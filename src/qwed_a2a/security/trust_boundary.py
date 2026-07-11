@@ -7,7 +7,6 @@ with automatic eviction of cold pairs.
 """
 
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set, Tuple
@@ -16,13 +15,16 @@ from qwed_a2a.utils.telemetry import logger
 
 
 # CodeQL wants sanitization before logging identifiers that come from env vars.
-# Agent IDs in QWED are simple [a-zA-Z0-9_-] identifiers — strip anything else.
-_SAFE_ID_PATTERN = re.compile(r"[^a-zA-Z0-9_-]")
+# Agent IDs in QWED are opaque — redact them so the original value is unrecoverable.
 
 
-def _safe(agent_id: str) -> str:
-    """Strip unsafe characters from an agent identifier for safe audit logging."""
-    return _SAFE_ID_PATTERN.sub("", agent_id)
+def _redact(agent_id: str) -> str:
+    """Return a log-safe, minimally-identifying representation of an agent id."""
+    if not agent_id:
+        return "<empty>"
+    if len(agent_id) <= 4:
+        return "****"
+    return f"{agent_id[:2]}***{agent_id[-2:]}"
 
 
 @dataclass
@@ -119,7 +121,7 @@ class TrustBoundary:
         """Add an agent to the global blocklist."""
         self._blocked_agents.add(agent_id)
         self._trusted_agents.pop(agent_id, None)
-        logger.warning("Agent blocked: agent=%s", _safe(agent_id))
+        logger.warning("Agent blocked: agent=%s", _redact(agent_id))
 
     def trust_agent(
         self,
@@ -139,10 +141,8 @@ class TrustBoundary:
         )
         self._trusted_agents[agent_id] = entry
         self._blocked_agents.discard(agent_id)
-        safe_id = _safe(agent_id)
         logger.info(
-            "Trust granted: agent=%s receivers=%s types=%s until=%s by=%s",
-            safe_id,
+            "Trust granted: receivers=%s types=%s until=%s by=%s",
             "scoped" if allowed_receivers else "any",
             "scoped" if allowed_payload_types else "any",
             "expires" if valid_until else "process-lifetime",
@@ -155,7 +155,7 @@ class TrustBoundary:
             del self._trusted_agents[agent_id]
             logger.warning(
                 "Trust revoked: agent=%s revoked_by=%s",
-                _safe(agent_id),
+                _redact(agent_id),
                 revoked_by,
             )
             return True
@@ -192,7 +192,8 @@ class TrustBoundary:
         ]
         for aid in expired:
             del self._trusted_agents[aid]
-            logger.info("Trust expired: agent=%s", _safe(aid))
+        if expired:
+            logger.info("Trust expired: count=%d", len(expired))
 
     def _evict_cold_buckets(self, now: float) -> None:
         """Remove token buckets for pairs idle beyond the TTL."""
@@ -292,6 +293,8 @@ class TrustBoundary:
 
         return True, None
 
+    _SKIP = object()
+
     @property
     def trusted_agent_count(self) -> int:
         """Return the number of currently trusted agents."""
@@ -304,57 +307,58 @@ class TrustBoundary:
         except json.JSONDecodeError:
             logger.error("Failed to parse QWED_A2A_TRUSTED_AGENTS as JSON")
             return
-
         for item in entries:
-            if not isinstance(item, dict):
-                logger.error("Skipping non-object entry in JSON trust list")
-                continue
-            raw_id = item.get("agent_id")
-            if not isinstance(raw_id, str) or not raw_id.strip():
-                logger.error("Skipping entry with missing or non-string agent_id")
-                continue
-            agent_id = raw_id.strip()
+            self._load_json_entry(item, granted_by)
 
-            raw_receivers = item.get("allowed_receivers")
-            receivers = None
-            if raw_receivers is not None:
-                if isinstance(raw_receivers, list):
-                    receivers = set(raw_receivers)
-                else:
-                    logger.warning(
-                        "Ignoring non-list allowed_receivers for agent=%s",
-                        _safe(agent_id),
-                    )
+    def _load_json_entry(self, item, granted_by: str) -> None:
+        """Parse and load a single JSON trust entry. Skips invalid entries."""
+        if not isinstance(item, dict):
+            logger.error("Skipping non-object entry in JSON trust list")
+            return
+        raw_id = item.get("agent_id")
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            logger.error("Skipping entry with missing or non-string agent_id")
+            return
+        agent_id = raw_id.strip()
 
-            raw_types = item.get("allowed_payload_types")
-            types = None
-            if raw_types is not None:
-                if isinstance(raw_types, list):
-                    types = set(raw_types)
-                else:
-                    logger.warning(
-                        "Ignoring non-list allowed_payload_types for agent=%s",
-                        _safe(agent_id),
-                    )
+        receivers = self._parse_scope_list(item.get("allowed_receivers"))
+        if receivers is self._SKIP:
+            return
+        types = self._parse_scope_list(item.get("allowed_payload_types"))
+        if types is self._SKIP:
+            return
 
-            valid_until = item.get("valid_until")
-            if valid_until is not None and not isinstance(valid_until, (int, float)):
+        raw_until = item.get("valid_until")
+        valid_until = None
+        if raw_until is not None:
+            if isinstance(raw_until, (int, float)):
+                valid_until = raw_until
+            else:
                 try:
-                    valid_until = float(valid_until)
+                    valid_until = float(raw_until)
                 except (ValueError, TypeError):
-                    logger.error(
-                        "Ignoring non-numeric valid_until for agent=%s",
-                        _safe(agent_id),
-                    )
-                    valid_until = None
+                    logger.error("Skipping entry with non-numeric valid_until")
+                    return
 
-            self.trust_agent(
-                agent_id=agent_id,
-                allowed_receivers=receivers,
-                allowed_payload_types=types,
-                valid_until=valid_until,
-                granted_by=granted_by,
-            )
+        self.trust_agent(
+            agent_id=agent_id,
+            allowed_receivers=receivers,
+            allowed_payload_types=types,
+            valid_until=valid_until,
+            granted_by=granted_by,
+        )
+
+    def _parse_scope_list(self, raw):
+        """Validate and convert a scope list. Returns set, None, or _SKIP."""
+        if raw is None:
+            return None
+        if not isinstance(raw, list):
+            logger.warning("Ignoring non-list scope field, treating as unrestricted")
+            return None
+        if not all(isinstance(v, str) for v in raw):
+            logger.error("Skipping entry: scope list contains non-string values")
+            return self._SKIP
+        return set(raw)
 
     def load_from_env(self, env_value: str, granted_by: str = "env") -> None:
         """Load scoped trust entries from a JSON or comma-separated env var.
