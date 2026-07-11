@@ -254,6 +254,15 @@ class TestTrustBoundaryLoadFromEnv:
         allowed, reason = tb.evaluate("agent-a", "receiver-x")
         assert not allowed
 
+    def test_boolean_valid_until_rejected(self, caplog):
+        """Boolean valid_until must be rejected, not treated as 0 or 1."""
+        tb = TrustBoundary(default_allow=False)
+        with caplog.at_level(logging.ERROR):
+            tb.load_from_env(
+                '[{"agent_id":"agent-a","valid_until":true}]'
+            )
+        assert not tb.is_trusted("agent-a")
+
     def test_non_numeric_valid_until_skips_entry(self, caplog):
         """Non-numeric string valid_until must skip entry entirely, not crash."""
         tb = TrustBoundary(default_allow=False)

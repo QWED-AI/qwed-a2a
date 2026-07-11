@@ -208,6 +208,18 @@ class TrustBoundary:
         for pair in cold_pairs:
             del self._rate_limits[pair]
 
+    @staticmethod
+    def _entry_rejects(entry, now, trusted):
+        """True if entry exists, is valid, but scope rejects."""
+        return entry is not None and entry.is_valid(now) and not trusted
+
+    @staticmethod
+    def _nullify_if_expired(entry, now):
+        """Return None if entry is expired, otherwise entry unchanged."""
+        if entry is not None and not entry.is_valid(now):
+            return None
+        return entry
+
     def _check_trust(
         self, sender_id: str, receiver_id: str, payload_type: Optional[str], now: float
     ) -> Optional[Tuple[bool, str]]:
@@ -241,30 +253,20 @@ class TrustBoundary:
             )
         )
 
-        if (
-            sender_entry is not None
-            and sender_entry.is_valid(now)
-            and not sender_trusted
-        ):
+        if self._entry_rejects(sender_entry, now, sender_trusted):
             return (
                 False,
                 f"Sender '{sender_id}' trust scope does not allow this communication",
             )
 
-        if (
-            receiver_entry is not None
-            and receiver_entry.is_valid(now)
-            and not receiver_trusted
-        ):
+        if self._entry_rejects(receiver_entry, now, receiver_trusted):
             return (
                 False,
                 f"Receiver '{receiver_id}' trust scope rejects this communication",
             )
 
-        if sender_entry is not None and not sender_entry.is_valid(now):
-            sender_entry = None
-        if receiver_entry is not None and not receiver_entry.is_valid(now):
-            receiver_entry = None
+        sender_entry = self._nullify_if_expired(sender_entry, now)
+        receiver_entry = self._nullify_if_expired(receiver_entry, now)
 
         if sender_entry is None and receiver_entry is None:
             return (
@@ -374,7 +376,7 @@ class TrustBoundary:
         raw_until = item.get("valid_until")
         valid_until = None
         if raw_until is not None:
-            if isinstance(raw_until, (int, float)):
+            if isinstance(raw_until, (int, float)) and not isinstance(raw_until, bool):
                 valid_until = raw_until
             else:
                 try:
