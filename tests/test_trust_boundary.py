@@ -397,3 +397,14 @@ class TestTrustBoundaryEvaluate:
             "sender-a", "receiver-x", payload_type="financial_transaction"
         )
         assert allowed
+
+    def test_receiver_allowed_receivers_enforced(self):
+        """Receiver's allowed_receivers must restrict which senders can reach it."""
+        tb = TrustBoundary(default_allow=False)
+        tb.trust_agent("receiver-x", allowed_receivers={"safe-sender"})
+        # Allowed sender
+        allowed, reason = tb.evaluate("safe-sender", "receiver-x")
+        assert allowed
+        # Blocked sender
+        allowed, reason = tb.evaluate("bad-sender", "receiver-x")
+        assert not allowed

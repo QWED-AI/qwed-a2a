@@ -231,6 +231,10 @@ class TrustBoundary:
             receiver_entry is not None
             and receiver_entry.is_valid(now)
             and (
+                receiver_entry.allowed_receivers is None
+                or sender_id in receiver_entry.allowed_receivers
+            )
+            and (
                 payload_type is None
                 or receiver_entry.allowed_payload_types is None
                 or payload_type in receiver_entry.allowed_payload_types
