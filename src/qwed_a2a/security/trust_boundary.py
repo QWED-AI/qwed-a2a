@@ -7,11 +7,22 @@ with automatic eviction of cold pairs.
 """
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set, Tuple
 
 from qwed_a2a.utils.telemetry import logger
+
+
+# CodeQL wants sanitization before logging identifiers that come from env vars.
+# Agent IDs in QWED are simple [a-zA-Z0-9_-] identifiers — strip anything else.
+_SAFE_ID_PATTERN = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _safe(agent_id: str) -> str:
+    """Strip unsafe characters from an agent identifier for safe audit logging."""
+    return _SAFE_ID_PATTERN.sub("", agent_id)
 
 
 @dataclass
@@ -107,7 +118,7 @@ class TrustBoundary:
         """Add an agent to the global blocklist."""
         self._blocked_agents.add(agent_id)
         self._trusted_agents.pop(agent_id, None)
-        logger.warning("Agent BLOCKED: agent=%s", agent_id)
+        logger.warning("Agent blocked: agent=%s", _safe(agent_id))
 
     def trust_agent(
         self,
@@ -127,12 +138,13 @@ class TrustBoundary:
         )
         self._trusted_agents[agent_id] = entry
         self._blocked_agents.discard(agent_id)
+        safe_id = _safe(agent_id)
         logger.info(
             "Trust granted: agent=%s receivers=%s types=%s until=%s by=%s",
-            agent_id,
-            allowed_receivers or "any",
-            allowed_payload_types or "any",
-            valid_until or "process-lifetime",
+            safe_id,
+            "scoped" if allowed_receivers else "any",
+            "scoped" if allowed_payload_types else "any",
+            "expires" if valid_until else "process-lifetime",
             granted_by,
         )
 
@@ -141,7 +153,9 @@ class TrustBoundary:
         if agent_id in self._trusted_agents:
             del self._trusted_agents[agent_id]
             logger.warning(
-                "Trust REVOKED: agent=%s revoked_by=%s", agent_id, revoked_by
+                "Trust revoked: agent=%s revoked_by=%s",
+                _safe(agent_id),
+                revoked_by,
             )
             return True
         return False
@@ -172,7 +186,7 @@ class TrustBoundary:
         ]
         for aid in expired:
             del self._trusted_agents[aid]
-            logger.info("Trust expired: agent=%s", aid)
+            logger.info("Trust expired: agent=%s", _safe(aid))
 
     def _evict_cold_buckets(self, now: float) -> None:
         """Remove token buckets for pairs idle beyond the TTL."""
@@ -266,6 +280,37 @@ class TrustBoundary:
 
         return True, None
 
+    def _load_json_entries(self, env_value: str, granted_by: str) -> None:
+        """Parse and load trust entries from a JSON array string."""
+        try:
+            entries = json.loads(env_value)
+        except json.JSONDecodeError:
+            logger.error("Failed to parse QWED_A2A_TRUSTED_AGENTS as JSON")
+            return
+
+        for item in entries:
+            agent_id = item.get("agent_id", "").strip()
+            if not agent_id:
+                continue
+            receivers = (
+                set(item["allowed_receivers"])
+                if item.get("allowed_receivers")
+                else None
+            )
+            types = (
+                set(item["allowed_payload_types"])
+                if item.get("allowed_payload_types")
+                else None
+            )
+            valid_until = item.get("valid_until")
+            self.trust_agent(
+                agent_id=agent_id,
+                allowed_receivers=receivers,
+                allowed_payload_types=types,
+                valid_until=valid_until,
+                granted_by=granted_by,
+            )
+
     def load_from_env(self, env_value: str, granted_by: str = "env") -> None:
         """Load scoped trust entries from a JSON or comma-separated env var.
 
@@ -279,37 +324,9 @@ class TrustBoundary:
         stripped = env_value.strip()
 
         if stripped.startswith("["):
-            try:
-                entries = json.loads(stripped)
-            except json.JSONDecodeError:
-                logger.error("Failed to parse QWED_A2A_TRUSTED_AGENTS as JSON")
-                return
-
-            for item in entries:
-                agent_id = item.get("agent_id", "").strip()
-                if not agent_id:
-                    continue
-                receivers = (
-                    set(item["allowed_receivers"])
-                    if item.get("allowed_receivers")
-                    else None
-                )
-                types = (
-                    set(item["allowed_payload_types"])
-                    if item.get("allowed_payload_types")
-                    else None
-                )
-                valid_until = item.get("valid_until")
-                self.trust_agent(
-                    agent_id=agent_id,
-                    allowed_receivers=receivers,
-                    allowed_payload_types=types,
-                    valid_until=valid_until,
-                    granted_by=granted_by,
-                )
+            self._load_json_entries(stripped, granted_by)
             return
 
-        # Simple comma-separated format
         for part in stripped.split(","):
             agent_id = part.strip()
             if agent_id:
