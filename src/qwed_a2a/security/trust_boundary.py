@@ -259,22 +259,26 @@ class TrustBoundary:
         sender_entry = self._trusted_agents.get(sender_id)
         receiver_entry = self._trusted_agents.get(receiver_id)
 
-        # Scope rejection is checked against ALL entries, including expired ones.
-        # This prevents expired scope-restricted entries from silently allowing
-        # communication that violates their original constraints.
+        # Receiver scope is checked BEFORE nullification — the receiver's security
+        # policy (what payload types it accepts) persists even after trust expiry.
+        receiver_blocks = self._receiver_scope_blocks(receiver_entry, payload_type)
+
+        # Sender scope is checked AFTER nullification — once a sender's trust
+        # expires, its permissions should not restrict independently-trusted receivers.
+        sender_entry = self._nullify_if_expired(sender_entry, now)
+        receiver_entry = self._nullify_if_expired(receiver_entry, now)
+
         if self._sender_scope_blocks(sender_entry, receiver_id, payload_type):
             return (
                 False,
                 f"Sender '{sender_id}' trust scope does not allow this communication",
             )
-        if self._receiver_scope_blocks(receiver_entry, payload_type):
+
+        if receiver_blocks:
             return (
                 False,
                 f"Receiver '{receiver_id}' trust scope rejects this communication",
             )
-
-        sender_entry = self._nullify_if_expired(sender_entry, now)
-        receiver_entry = self._nullify_if_expired(receiver_entry, now)
 
         if sender_entry is None and receiver_entry is None:
             return (
@@ -299,10 +303,9 @@ class TrustBoundary:
         """
         now = time.time()
 
-        # Evict expired trust entries before evaluation
-        self._evict_expired_trust(now)
-
-        # Check global blocklist
+        # Blocklist checks (fast path, no trust needed)
+        # Note: _evict_expired_trust is called AFTER _check_trust so that expired
+        # scope-restricted entries remain inspectable during the trust decision.
         if sender_id in self._blocked_agents:
             return False, f"Sender '{sender_id}' is globally blocked"
 
@@ -319,6 +322,10 @@ class TrustBoundary:
             result = self._check_trust(sender_id, receiver_id, payload_type, now)
             if result is not None:
                 return result
+
+        # Evict expired trust entries AFTER the trust decision, so that expired
+        # scope-restricted entries remain inspectable during _check_trust.
+        self._evict_expired_trust(now)
 
         # Token-bucket rate limiting (only reached by allowed pairs)
         now_mono = time.monotonic()
@@ -430,6 +437,12 @@ class TrustBoundary:
 
         if stripped.startswith("["):
             self._load_json_entries(stripped, granted_by)
+            return
+
+        if stripped.startswith("{"):
+            logger.error(
+                "Skipping QWED_A2A_TRUSTED_AGENTS: JSON object is not supported, use an array"
+            )
             return
 
         try:
