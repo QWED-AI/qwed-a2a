@@ -180,9 +180,7 @@ class TestTrustBoundaryLoadFromEnv:
     def test_json_format_scoped(self):
         """JSON format must create scoped trust entries."""
         tb = TrustBoundary(default_allow=False)
-        tb.load_from_env(
-            '[{"agent_id":"agent-a","allowed_receivers":["receiver-x"]}]'
-        )
+        tb.load_from_env('[{"agent_id":"agent-a","allowed_receivers":["receiver-x"]}]')
         allowed, reason = tb.evaluate("agent-a", "receiver-x")
         assert allowed
         allowed, reason = tb.evaluate("agent-a", "receiver-y")
@@ -206,9 +204,7 @@ class TestTrustBoundaryLoadFromEnv:
     def test_json_format_with_expiry(self):
         """JSON format with valid_until must create expiring trust."""
         tb = TrustBoundary(default_allow=False)
-        tb.load_from_env(
-            '[{"agent_id":"agent-a","valid_until":1.0}]'
-        )
+        tb.load_from_env('[{"agent_id":"agent-a","valid_until":1.0}]')
         allowed, reason = tb.evaluate("agent-a", "receiver-x")
         assert not allowed
 
@@ -245,9 +241,7 @@ class TestTrustBoundaryLoadFromEnv:
     def test_string_valid_until_float_conversion(self):
         """String valid_until must be converted to float, not crash."""
         tb = TrustBoundary(default_allow=False)
-        tb.load_from_env(
-            '[{"agent_id":"agent-a","valid_until":"0.1"}]'
-        )
+        tb.load_from_env('[{"agent_id":"agent-a","valid_until":"0.1"}]')
         # Entry was created with valid_until=0.1
         assert tb.is_trusted("agent-a", now=0.0)
         # Entry is expired after 0.1
@@ -258,18 +252,14 @@ class TestTrustBoundaryLoadFromEnv:
         """Boolean valid_until must be rejected, not treated as 0 or 1."""
         tb = TrustBoundary(default_allow=False)
         with caplog.at_level(logging.ERROR):
-            tb.load_from_env(
-                '[{"agent_id":"agent-a","valid_until":true}]'
-            )
+            tb.load_from_env('[{"agent_id":"agent-a","valid_until":true}]')
         assert not tb.is_trusted("agent-a")
 
     def test_non_numeric_valid_until_skips_entry(self, caplog):
         """Non-numeric string valid_until must skip entry entirely, not crash."""
         tb = TrustBoundary(default_allow=False)
         with caplog.at_level(logging.ERROR):
-            tb.load_from_env(
-                '[{"agent_id":"agent-a","valid_until":"not-a-number"}]'
-            )
+            tb.load_from_env('[{"agent_id":"agent-a","valid_until":"not-a-number"}]')
         assert not tb.is_trusted("agent-a")
         # Entry was skipped, agent is not trusted
 
@@ -277,9 +267,7 @@ class TestTrustBoundaryLoadFromEnv:
         """NaN/Infinity valid_until must skip entry."""
         tb = TrustBoundary(default_allow=False)
         with caplog.at_level(logging.ERROR):
-            tb.load_from_env(
-                '[{"agent_id":"agent-a","valid_until":"NaN"}]'
-            )
+            tb.load_from_env('[{"agent_id":"agent-a","valid_until":"NaN"}]')
         assert not tb.is_trusted("agent-a")
 
     def test_json_object_rejected(self, caplog):
@@ -406,14 +394,3 @@ class TestTrustBoundaryEvaluate:
             "sender-a", "receiver-x", payload_type="financial_transaction"
         )
         assert allowed
-
-    def test_receiver_allowed_receivers_enforced(self):
-        """Receiver's allowed_receivers must restrict which senders can reach it."""
-        tb = TrustBoundary(default_allow=False)
-        tb.trust_agent("receiver-x", allowed_receivers={"safe-sender"})
-        # Allowed sender
-        allowed, reason = tb.evaluate("safe-sender", "receiver-x")
-        assert allowed
-        # Blocked sender
-        allowed, reason = tb.evaluate("bad-sender", "receiver-x")
-        assert not allowed

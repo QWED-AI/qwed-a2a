@@ -26,7 +26,6 @@ import pytest
 
 from qwed_a2a.security.crypto import A2ACryptoService, JtiRegistry
 
-
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -265,12 +264,8 @@ class TestCrossServiceVerification:
         key_a = _generate_test_pem()
         key_b = _generate_test_pem()
 
-        service_a = A2ACryptoService(
-            issuer_id="did:qwed:a2a:node-A", pem_key=key_a
-        )
-        service_b = A2ACryptoService(
-            issuer_id="did:qwed:a2a:node-B", pem_key=key_b
-        )
+        service_a = A2ACryptoService(issuer_id="did:qwed:a2a:node-A", pem_key=key_a)
+        service_b = A2ACryptoService(issuer_id="did:qwed:a2a:node-B", pem_key=key_b)
 
         token = _sign(service_a, trace_id="cross_test")
 
@@ -648,9 +643,9 @@ class TestPersistentSigningKey:
         s2 = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
 
         is_valid, claims, error = s2.verify_attestation(token)
-        assert is_valid is True, (
-            f"JWT signed before restart is not verifiable after restart: {error}"
-        )
+        assert (
+            is_valid is True
+        ), f"JWT signed before restart is not verifiable after restart: {error}"
         assert claims["jti"] == "t_audit_cont"
 
     def test_two_instances_with_same_pem_produce_mutually_verifiable_jwts(self):
@@ -702,7 +697,11 @@ class TestPersistentSigningKey:
                 "data": {
                     "claimed_total": Decimal("10.00"),
                     "line_items": [
-                        {"description": "Item", "amount": Decimal("10.00"), "quantity": 1}
+                        {
+                            "description": "Item",
+                            "amount": Decimal("10.00"),
+                            "quantity": 1,
+                        }
                     ],
                 }
             },

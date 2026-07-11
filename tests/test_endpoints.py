@@ -20,6 +20,7 @@ from qwed_a2a.protocol.endpoints import (
 )
 from qwed_a2a.protocol.schema import InterceptorConfig
 from qwed_a2a.security.trust_boundary import TrustBoundary
+
 # ─── fixtures ──────────────────────────────────────────────────────────────────
 
 

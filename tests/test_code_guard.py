@@ -23,7 +23,6 @@ from qwed_a2a.protocol.schema import (
 )
 from qwed_a2a.security.trust_boundary import TrustBoundary
 
-
 # helpers
 
 

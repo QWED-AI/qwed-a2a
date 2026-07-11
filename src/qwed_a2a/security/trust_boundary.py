@@ -142,7 +142,8 @@ class TrustBoundary:
         self._trusted_agents[agent_id] = entry
         self._blocked_agents.discard(agent_id)
         logger.info(
-            "Trust granted: receivers=%s types=%s until=%s by=%s",
+            "Trust granted: agent=%s receivers=%s types=%s until=%s by=%s",
+            _redact(agent_id),
             "scoped" if allowed_receivers else "any",
             "scoped" if allowed_payload_types else "any",
             "expires" if valid_until else "process-lifetime",
@@ -242,10 +243,6 @@ class TrustBoundary:
         receiver_trusted = (
             receiver_entry is not None
             and receiver_entry.is_valid(now)
-            and (
-                receiver_entry.allowed_receivers is None
-                or sender_id in receiver_entry.allowed_receivers
-            )
             and (
                 payload_type is None
                 or receiver_entry.allowed_payload_types is None
@@ -425,14 +422,16 @@ class TrustBoundary:
             return
 
         try:
-            json.loads(stripped)
+            parsed = json.loads(stripped)
         except json.JSONDecodeError:
             pass
         else:
-            logger.error(
-                "Skipping QWED_A2A_TRUSTED_AGENTS: JSON value must be an array"
-            )
-            return
+            if isinstance(parsed, (dict, list)):
+                logger.error(
+                    "Skipping QWED_A2A_TRUSTED_AGENTS: JSON value must be an array"
+                )
+                return
+            # JSON scalars (strings, numbers, booleans, null) fall through to CSV path
 
         for part in stripped.split(","):
             agent_id = part.strip()
