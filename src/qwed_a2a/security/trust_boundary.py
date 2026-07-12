@@ -114,7 +114,7 @@ class TrustBoundary:
 
         # Eviction threshold: remove idle buckets after this many seconds
         self._eviction_ttl: float = 300.0  # 5 minutes
-        self._last_eviction: float = 0.0
+        self._last_eviction: float = -float("inf")
         self._last_trust_eviction_mono: float = -float("inf")
 
     def block_agent(self, agent_id: str) -> None:
