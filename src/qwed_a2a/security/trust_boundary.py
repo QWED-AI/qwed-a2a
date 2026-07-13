@@ -87,11 +87,15 @@ class TrustBoundary:
     """
     Zero-trust boundary for Agent-to-Agent communication.
 
-    Evaluates whether a given agent pair is allowed to communicate
-    based on allowlists, blocklists, and token-bucket rate limits.
+    Trust is **directional**: only explicitly trusted senders may
+    initiate communication. An untrusted sender cannot reach any
+    receiver, even if the receiver is trusted. This prevents
+    "name-dropping" attacks where an untrusted agent names a trusted
+    receiver to bypass the allowlist gate.
 
-    Default policy is deny-all (default_allow=False) — agents must be
-    explicitly trusted or allowlisted to communicate.
+    The allowlist gate is bypassed when `default_allow=True` (permissive
+    mode), but scope restrictions on individual TrustEntry records are
+    always enforced regardless of `default_allow`.
     """
 
     def __init__(
@@ -276,9 +280,15 @@ class TrustBoundary:
         If you need persistent scope restrictions, use valid_until=None (process
         lifetime) instead of setting an expiry.
 
+        Trust is directional:
+          - Sender MUST be explicitly trusted to initiate communication.
+          - Receiver trust alone does NOT open the gate for untrusted senders.
+          - Scope restrictions (allowed_receivers / allowed_payload_types) are
+            always enforced on both sender and receiver entries.
+
         Args:
-            enforce_allowlist: If True, reject communication between two unknown
-                agents (the 'Neither in allowlist' check). Scope is always enforced.
+            enforce_allowlist: If True, reject when sender is not in the trust
+                allowlist. Scope is always enforced regardless of this flag.
         """
         sender_entry = self._trusted_agents.get(sender_id)
         receiver_entry = self._trusted_agents.get(receiver_id)
@@ -299,10 +309,10 @@ class TrustBoundary:
                 f"Receiver '{_redact(receiver_id)}' trust scope rejects this communication",
             )
 
-        if enforce_allowlist and sender_entry is None and receiver_entry is None:
+        if enforce_allowlist and sender_entry is None:
             return (
                 False,
-                f"Neither sender '{_redact(sender_id)}' nor receiver '{_redact(receiver_id)}' is in the trust allowlist",
+                f"Sender '{_redact(sender_id)}' is not in the trust allowlist",
             )
 
         return None
@@ -311,6 +321,10 @@ class TrustBoundary:
         self, sender_id: str, receiver_id: str, payload_type: Optional[str] = None
     ) -> Tuple[bool, Optional[str]]:
         """Evaluate whether a sender->receiver communication is allowed.
+
+        Trust is directional: the sender must be explicitly trusted when
+        default_allow=False. Scope restrictions on both sender and receiver
+        entries are always enforced.
 
         Args:
             sender_id: The agent sending the message.
