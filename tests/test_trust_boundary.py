@@ -344,12 +344,35 @@ class TestTrustBoundaryEvaluate:
         allowed, reason = tb.evaluate("agent-a", "any-receiver")
         assert allowed
 
-    def test_trusted_receiver_allows_communication(self):
-        """Trusted receiver also allows the communication."""
+    def test_trusted_receiver_does_not_allow_untrusted_sender(self):
+        """Trusted receiver alone must not allow untrusted senders."""
         tb = TrustBoundary(default_allow=False)
         tb.trust_agent("receiver-x")
         allowed, reason = tb.evaluate("unknown-sender", "receiver-x")
+        assert not allowed
+        assert "trust allowlist" in reason.lower()
+
+    def test_trusted_sender_to_untrusted_receiver_allowed(self):
+        """Trusted sender may communicate with any receiver (unidirectional)."""
+        tb = TrustBoundary(default_allow=False)
+        tb.trust_agent("agent-a")
+        allowed, reason = tb.evaluate("agent-a", "external-service")
         assert allowed
+
+    def test_trusted_sender_to_trusted_receiver_allowed(self):
+        """Both trusted = allowed."""
+        tb = TrustBoundary(default_allow=False)
+        tb.trust_agent("agent-a")
+        tb.trust_agent("agent-b")
+        allowed, reason = tb.evaluate("agent-a", "agent-b")
+        assert allowed
+
+    def test_untrusted_sender_to_untrusted_receiver_blocked(self):
+        """Neither trusted = blocked."""
+        tb = TrustBoundary(default_allow=False)
+        allowed, reason = tb.evaluate("unknown-a", "unknown-b")
+        assert not allowed
+        assert "trust allowlist" in reason.lower()
 
     def test_payload_type_scope_on_evaluate(self):
         """Payload type scope must be enforced in evaluate()."""
@@ -378,19 +401,20 @@ class TestTrustBoundaryEvaluate:
         assert allowed
 
     def test_scoped_receiver_with_untrusted_sender(self):
-        """Receiver scope must also be enforced when receiver_trusted."""
+        """Untrusted sender must be blocked regardless of receiver scope."""
         tb = TrustBoundary(default_allow=False)
         tb.trust_agent("receiver-x", allowed_payload_types={"financial_transaction"})
-        # Untrusted sender sending non-matching payload type to scoped receiver = blocked
+        # Untrusted sender to scoped receiver = blocked (sender not trusted)
+        allowed, reason = tb.evaluate(
+            "unknown-sender", "receiver-x", payload_type="financial_transaction"
+        )
+        assert not allowed
+        assert "trust allowlist" in reason.lower()
+        # Untrusted sender with mismatched payload type = still blocked
         allowed, reason = tb.evaluate(
             "unknown-sender", "receiver-x", payload_type="code_execution"
         )
         assert not allowed
-        # Untrusted sender sending matching payload type to scoped receiver = allowed
-        allowed, reason = tb.evaluate(
-            "unknown-sender", "receiver-x", payload_type="financial_transaction"
-        )
-        assert allowed
 
     def test_receiver_scope_violation_even_when_sender_trusted(self):
         """Receiver scope must block even when sender has valid but scope-unrestricted entry."""
