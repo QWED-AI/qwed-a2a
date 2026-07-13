@@ -283,8 +283,11 @@ class TrustBoundary:
         Trust is directional:
           - Sender MUST be explicitly trusted to initiate communication.
           - Receiver trust alone does NOT open the gate for untrusted senders.
-          - Scope restrictions (allowed_receivers / allowed_payload_types) are
-            always enforced on both sender and receiver entries.
+          - The allowlist gate runs BEFORE the receiver scope check so that
+            untrusted senders receive a consistent error message regardless
+            of the receiver's scope configuration (prevents info disclosure).
+          - Sender scope runs first (safe for untrusted senders — None entry
+            always passes), then allowlist, then receiver scope.
 
         Args:
             enforce_allowlist: If True, reject when sender is not in the trust
@@ -297,22 +300,26 @@ class TrustBoundary:
         sender_entry = self._nullify_if_expired(sender_entry, now)
         receiver_entry = self._nullify_if_expired(receiver_entry, now)
 
+        # Sender scope: safe for untrusted senders — None entry returns False.
         if self._sender_scope_blocks(sender_entry, receiver_id, payload_type):
             return (
                 False,
                 f"Sender '{_redact(sender_id)}' trust scope does not allow this communication",
             )
 
-        if self._receiver_scope_blocks(receiver_entry, sender_id, payload_type):
-            return (
-                False,
-                f"Receiver '{_redact(receiver_id)}' trust scope rejects this communication",
-            )
-
+        # Allowlist gate: run before receiver scope to prevent info disclosure
+        # (untrusted senders get a consistent message regardless of receiver config).
         if enforce_allowlist and sender_entry is None:
             return (
                 False,
                 f"Sender '{_redact(sender_id)}' is not in the trust allowlist",
+            )
+
+        # Receiver scope: only reached by trusted senders or default_allow=True.
+        if self._receiver_scope_blocks(receiver_entry, sender_id, payload_type):
+            return (
+                False,
+                f"Receiver '{_redact(receiver_id)}' trust scope rejects this communication",
             )
 
         return None
@@ -356,7 +363,7 @@ class TrustBoundary:
         # Trust decision BEFORE rate-limit allocation (prevents map spray).
         # Scope restrictions are always enforced — even when default_allow=True, an
         # agent with a scoped trust entry should still be limited by that scope.
-        # The "neither in allowlist" check is only applied when default_allow=False.
+        # The sender-allowlist check is only applied when default_allow=False.
         result = self._check_trust(
             sender_id,
             receiver_id,
