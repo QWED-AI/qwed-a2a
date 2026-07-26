@@ -410,7 +410,7 @@ class A2AVerificationInterceptor:
                     ),
                 }
             claim = assertion.get("claim")
-            if not isinstance(claim, str) or not claim:
+            if not isinstance(claim, str) or not claim.strip():
                 return {
                     "verified": False,
                     "status": "unverifiable",
@@ -591,6 +591,12 @@ class A2AVerificationInterceptor:
                 root = node.module.split(".")[0]
                 if root in self._DANGEROUS_IMPORTS:
                     threats.append(f"import:{root}")
+                if root == "os":
+                    for alias in node.names:
+                        if alias.name in self._DANGEROUS_RECEIVER_METHODS.get(
+                            "os", frozenset()
+                        ):
+                            threats.append(f"import:os.{alias.name}")
         return threats
 
     def _scan_ast_call(self, node: ast.Call) -> list[str]:

@@ -94,6 +94,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "data" in verdict.reason
 
     async def test_malformed_line_items_returns_unverifiable(
         self, interceptor, financial_malformed_line_items_message
@@ -105,6 +107,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "line_items" in verdict.reason
 
     async def test_non_dict_line_item_returns_unverifiable(
         self, interceptor, financial_non_dict_line_item_message
@@ -116,6 +120,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "line item" in verdict.reason
 
     async def test_missing_amount_line_item_returns_unverifiable(
         self, interceptor, financial_missing_amount_line_item_message
@@ -127,6 +133,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "amount" in verdict.reason
 
     async def test_null_amount_line_item_returns_unverifiable(
         self, interceptor, financial_null_amount_line_item_message
@@ -138,6 +146,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "amount" in verdict.reason
 
     async def test_null_quantity_line_item_returns_unverifiable(
         self, interceptor, financial_null_quantity_line_item_message
@@ -149,6 +159,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "quantity" in verdict.reason
 
     async def test_non_numeric_claimed_total_returns_unverifiable(
         self, interceptor, financial_non_numeric_claimed_total_message
@@ -160,6 +172,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "claimed_total" in verdict.reason
 
     async def test_non_numeric_amount_returns_unverifiable(
         self, interceptor, financial_non_numeric_amount_message
@@ -171,6 +185,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "amount" in verdict.reason
 
 
 @pytest.mark.asyncio
@@ -231,6 +247,8 @@ class TestInterceptorLogic:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "logic_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "assertions" in verdict.reason
 
     async def test_non_dict_assertion_returns_unverifiable(
         self, interceptor, logic_non_dict_assertion_message
@@ -242,6 +260,8 @@ class TestInterceptorLogic:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "logic_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "assertion" in verdict.reason
 
     async def test_missing_claim_assertion_returns_unverifiable(
         self, interceptor, logic_missing_claim_assertion_message
