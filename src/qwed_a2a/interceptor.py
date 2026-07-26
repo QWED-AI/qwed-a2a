@@ -216,9 +216,13 @@ class A2AVerificationInterceptor:
 
         if claimed_total is None or not line_items:
             return {
-                "verified": True,
+                "verified": False,
+                "status": "unverifiable",
                 "engine": "finance_guard",
-                "reason": "No verifiable financial claims in payload",
+                "reason": (
+                    "FINANCIAL_TRANSACTION payload missing required fields: "
+                    "data.claimed_total and data.line_items must be present for verification."
+                ),
             }
 
         # Sum line items with Decimal precision
@@ -265,9 +269,13 @@ class A2AVerificationInterceptor:
 
         if not assertions:
             return {
-                "verified": True,
+                "verified": False,
+                "status": "unverifiable",
                 "engine": "logic_guard",
-                "reason": "No assertions to verify",
+                "reason": (
+                    "LOGIC_ASSERTION payload missing required field: "
+                    "assertions list must be non-empty for verification."
+                ),
             }
 
         # Check for direct contradictions (P and NOT P)

@@ -45,6 +45,19 @@ class TestInterceptorFinancial:
         assert Decimal(str(verdict.details["computed_total"])) == Decimal("150.00")
         assert Decimal(str(verdict.details["claimed_total"])) == Decimal("999.99")
 
+    async def test_empty_financial_returns_unverifiable(
+        self, interceptor, empty_financial_message
+    ):
+        """Empty financial payload must return UNVERIFIABLE, not FORWARDED."""
+        verdict = await interceptor.intercept(
+            empty_financial_message, trace_id="t_fin_empty"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "claimed_total" in verdict.reason
+
 
 @pytest.mark.asyncio
 class TestInterceptorCode:
@@ -80,6 +93,19 @@ class TestInterceptorLogic:
         assert verdict.status == VerdictStatus.BLOCKED
         assert "contradiction" in verdict.reason.lower()
         assert verdict.engine_used == "logic_guard"
+
+    async def test_empty_logic_returns_unverifiable(
+        self, interceptor, empty_logic_message
+    ):
+        """Empty logic assertions must return UNVERIFIABLE, not FORWARDED."""
+        verdict = await interceptor.intercept(
+            empty_logic_message, trace_id="t_logic_empty"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "logic_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "assertions" in verdict.reason
 
 
 @pytest.mark.asyncio

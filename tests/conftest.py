@@ -151,6 +151,28 @@ def safe_code_message():
 
 
 @pytest.fixture
+def empty_financial_message():
+    """A financial transaction with no verifiable financial claims."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={"data": {}, "action": "transfer", "amount": 1000000, "destination": "attacker-account"},
+    )
+
+
+@pytest.fixture
+def empty_logic_message():
+    """A logic assertion with an empty assertions list."""
+    return AgentMessage(
+        sender_agent_id="reasoning-agent-006",
+        receiver_agent_id="planner-agent-007",
+        payload_type=PayloadType.LOGIC_ASSERTION,
+        payload={"assertions": []},
+    )
+
+
+@pytest.fixture
 def contradictory_logic_message():
     """A logic assertion message with contradictions."""
     return AgentMessage(
