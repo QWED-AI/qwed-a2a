@@ -422,10 +422,11 @@ class A2AVerificationInterceptor:
                 }
             negated = assertion.get("negated", False)
 
+            stripped = claim.strip()
             if negated:
-                negative_claims.add(claim)
+                negative_claims.add(stripped)
             else:
-                positive_claims.add(claim)
+                positive_claims.add(stripped)
 
         contradictions = sorted(positive_claims & negative_claims)
 
@@ -588,15 +589,7 @@ class A2AVerificationInterceptor:
             elif isinstance(node, ast.Import):
                 threats.extend(self._scan_ast_import(node))
             elif isinstance(node, ast.ImportFrom) and node.module:
-                root = node.module.split(".")[0]
-                if root in self._DANGEROUS_IMPORTS:
-                    threats.append(f"import:{root}")
-                if root == "os":
-                    for alias in node.names:
-                        if alias.name in self._DANGEROUS_RECEIVER_METHODS.get(
-                            "os", frozenset()
-                        ):
-                            threats.append(f"import:os.{alias.name}")
+                threats.extend(self._scan_ast_import_from(node))
         return threats
 
     def _scan_ast_call(self, node: ast.Call) -> list[str]:
@@ -624,6 +617,20 @@ class A2AVerificationInterceptor:
             for alias in node.names
             if alias.name.split(".")[0] in self._DANGEROUS_IMPORTS
         ]
+
+    def _scan_ast_import_from(self, node: ast.ImportFrom) -> list[str]:
+        """Detect threats in a single AST ImportFrom node."""
+        threats: list[str] = []
+        root = node.module.split(".")[0]
+        if root in self._DANGEROUS_IMPORTS:
+            threats.append(f"import:{root}")
+        if root == "os":
+            for alias in node.names:
+                if alias.name in self._DANGEROUS_RECEIVER_METHODS.get(
+                    "os", frozenset()
+                ):
+                    threats.append(f"import:os.{alias.name}")
+        return threats
 
     def _scan_regex_threats(self, code: str) -> list[str]:
         """Collect threats from the regex heuristic layer."""
