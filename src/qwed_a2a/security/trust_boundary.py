@@ -10,7 +10,6 @@ import json
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Set, Tuple
 
 from qwed_a2a.utils.telemetry import logger
 
@@ -56,16 +55,14 @@ class TrustEntry:
     """Scoped, expiring trust grant for a single agent."""
 
     agent_id: str
-    allowed_receivers: Optional[Set[str]] = None
-    allowed_payload_types: Optional[Set[str]] = None
-    valid_until: Optional[float] = None
+    allowed_receivers: set[str] | None = None
+    allowed_payload_types: set[str] | None = None
+    valid_until: float | None = None
     granted_by: str = "config"
     granted_at: float = field(default_factory=time.time)
 
     def is_valid(self, now: float) -> bool:
-        if self.valid_until is not None and now > self.valid_until:
-            return False
-        return True
+        return self.valid_until is None or now <= self.valid_until
 
     def allows(self, receiver: str, payload_type: str, now: float) -> bool:
         if not self.is_valid(now):
@@ -75,12 +72,10 @@ class TrustEntry:
             and receiver not in self.allowed_receivers
         ):
             return False
-        if (
-            self.allowed_payload_types is not None
-            and payload_type not in self.allowed_payload_types
-        ):
-            return False
-        return True
+        return (
+            self.allowed_payload_types is None
+            or payload_type in self.allowed_payload_types
+        )
 
 
 class TrustBoundary:
@@ -107,14 +102,14 @@ class TrustBoundary:
         self.default_allow = default_allow
 
         # Agent-level controls
-        self._blocked_agents: Set[str] = set()
-        self._trusted_agents: Dict[str, TrustEntry] = {}
+        self._blocked_agents: set[str] = set()
+        self._trusted_agents: dict[str, TrustEntry] = {}
 
         # Pair-level controls
-        self._blocked_pairs: Set[Tuple[str, str]] = set()
+        self._blocked_pairs: set[tuple[str, str]] = set()
 
         # Token-bucket rate limiting per agent pair
-        self._rate_limits: Dict[Tuple[str, str], TokenBucket] = {}
+        self._rate_limits: dict[tuple[str, str], TokenBucket] = {}
 
         # Eviction threshold: remove idle buckets after this many seconds
         self._eviction_ttl: float = 300.0  # 5 minutes
@@ -130,9 +125,9 @@ class TrustBoundary:
     def trust_agent(
         self,
         agent_id: str,
-        allowed_receivers: Optional[Set[str]] = None,
-        allowed_payload_types: Optional[Set[str]] = None,
-        valid_until: Optional[float] = None,
+        allowed_receivers: set[str] | None = None,
+        allowed_payload_types: set[str] | None = None,
+        valid_until: float | None = None,
         granted_by: str = "config",
     ) -> None:
         """Grant scoped, expiring trust to an agent."""
@@ -173,16 +168,14 @@ class TrustBoundary:
         """Unblock a specific agent pair."""
         self._blocked_pairs.discard((sender_id, receiver_id))
 
-    def is_trusted(self, agent_id: str, now: Optional[float] = None) -> bool:
+    def is_trusted(self, agent_id: str, now: float | None = None) -> bool:
         """Check if an agent has a valid (non-expired) trust entry."""
         if now is None:
             now = time.time()
         entry = self._trusted_agents.get(agent_id)
         if entry is None:
             return False
-        if not entry.is_valid(now):
-            return False
-        return True
+        return entry.is_valid(now)
 
     def _evict_expired_trust(self, now: float) -> None:
         """Remove expired trust entries to prevent memory leaks."""
@@ -226,13 +219,11 @@ class TrustBoundary:
             and receiver_id not in entry.allowed_receivers
         ):
             return True
-        if (
+        return (
             payload_type is not None
             and entry.allowed_payload_types is not None
             and payload_type not in entry.allowed_payload_types
-        ):
-            return True
-        return False
+        )
 
     @staticmethod
     def _receiver_scope_blocks(entry, sender_id, payload_type):
@@ -249,13 +240,11 @@ class TrustBoundary:
             and sender_id not in entry.allowed_receivers
         ):
             return True
-        if (
+        return (
             payload_type is not None
             and entry.allowed_payload_types is not None
             and payload_type not in entry.allowed_payload_types
-        ):
-            return True
-        return False
+        )
 
     @staticmethod
     def _nullify_if_expired(entry, now):
@@ -268,10 +257,10 @@ class TrustBoundary:
         self,
         sender_id: str,
         receiver_id: str,
-        payload_type: Optional[str],
+        payload_type: str | None,
         now: float,
         enforce_allowlist: bool = True,
-    ) -> Optional[Tuple[bool, str]]:
+    ) -> tuple[bool, str] | None:
         """Check trust entries for sender/receiver. Returns rejection tuple or None.
 
         QWED deterministic philosophy: expired = non-existent.
@@ -325,8 +314,8 @@ class TrustBoundary:
         return None
 
     def evaluate(
-        self, sender_id: str, receiver_id: str, payload_type: Optional[str] = None
-    ) -> Tuple[bool, Optional[str]]:
+        self, sender_id: str, receiver_id: str, payload_type: str | None = None
+    ) -> tuple[bool, str | None]:
         """Evaluate whether a sender->receiver communication is allowed.
 
         Trust is directional: the sender must be explicitly trusted when

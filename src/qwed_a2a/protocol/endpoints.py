@@ -7,7 +7,7 @@ FastAPI router exposing the A2A verification gateway via HTTP.
 import os
 import threading
 import uuid
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -68,8 +68,8 @@ def configure_interceptor(config: InterceptorConfig) -> None:
         _interceptor = new_interceptor
 
 
-@router.post("/intercept", response_model=Dict[str, Any])
-async def intercept_message(message: AgentMessage) -> Dict[str, Any]:
+@router.post("/intercept", response_model=dict[str, Any])
+async def intercept_message(message: AgentMessage) -> dict[str, Any]:
     """
     Primary A2A verification gateway.
 
@@ -84,15 +84,13 @@ async def intercept_message(message: AgentMessage) -> Dict[str, Any]:
     except RuntimeError as exc:
         logger.error("Interceptor runtime error: %s", exc)
         raise HTTPException(status_code=503, detail="Signing key unavailable")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # generic 500 catch-all
         logger.error("Interceptor internal error: %s", exc)
-        raise HTTPException(
-            status_code=500, detail=f"Internal interceptor error: {exc}"
-        )
+        raise HTTPException(status_code=500, detail="Internal interceptor error")
 
 
 @router.get("/health")
-async def health_check() -> Dict[str, str]:
+async def health_check() -> dict[str, str]:
     """Service health check."""
     return {
         "status": "healthy",
@@ -102,7 +100,7 @@ async def health_check() -> Dict[str, str]:
 
 
 @router.get("/metrics")
-async def metrics() -> Dict[str, Any]:
+async def metrics() -> dict[str, Any]:
     """Return aggregated intercept metrics."""
     return get_metrics().to_dict()
 
@@ -138,7 +136,7 @@ wellknown_router = APIRouter(tags=["JWKS"])
         },
     },
 )
-async def jwks_endpoint() -> Dict[str, Any]:
+async def jwks_endpoint() -> dict[str, Any]:
     """Public key set for JWT verification by external consumers."""
     try:
         interceptor = get_interceptor()

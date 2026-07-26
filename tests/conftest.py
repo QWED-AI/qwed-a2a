@@ -2,6 +2,10 @@
 Shared test fixtures for qwed-a2a test suite.
 """
 
+# ruff: noqa: E402
+# Environment variables MUST be set before importing qwed_a2a modules
+# (crypto.py reads QWED_A2A_DEPLOYMENT_ID and QWED_A2A_SIGNING_KEY_PEM at module level).
+
 import os
 
 # Set deployment ID before any qwed_a2a modules are imported.
@@ -147,6 +151,226 @@ def safe_code_message():
         receiver_agent_id="executor-agent-005",
         payload_type=PayloadType.CODE_EXECUTION,
         payload={"code": "result = sum([1, 2, 3, 4, 5])"},
+    )
+
+
+@pytest.fixture
+def empty_financial_message():
+    """A financial transaction with no verifiable financial claims."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {},
+            "action": "transfer",
+            "amount": 1000000,
+            "destination": "attacker-account",
+        },
+    )
+
+
+@pytest.fixture
+def empty_logic_message():
+    """A logic assertion with an empty assertions list."""
+    return AgentMessage(
+        sender_agent_id="reasoning-agent-006",
+        receiver_agent_id="planner-agent-007",
+        payload_type=PayloadType.LOGIC_ASSERTION,
+        payload={"assertions": []},
+    )
+
+
+@pytest.fixture
+def financial_missing_claimed_total_message():
+    """Financial payload with line_items but no claimed_total."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "line_items": [
+                    {"description": "Widget", "amount": Decimal("50.00"), "quantity": 1}
+                ],
+            }
+        },
+    )
+
+
+@pytest.fixture
+def financial_empty_line_items_message():
+    """Financial payload with claimed_total but empty line_items."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {"claimed_total": Decimal("50.00"), "line_items": []},
+        },
+    )
+
+
+@pytest.fixture
+def financial_malformed_data_message():
+    """Financial payload where data is None instead of a mapping."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={"data": None},
+    )
+
+
+@pytest.fixture
+def financial_malformed_line_items_message():
+    """Financial payload where line_items is a string instead of a list."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {"claimed_total": Decimal("50.00"), "line_items": "not-a-list"},
+        },
+    )
+
+
+@pytest.fixture
+def financial_non_dict_line_item_message():
+    """Financial payload with a line item that is not a mapping."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("50.00"),
+                "line_items": ["not-a-mapping"],
+            },
+        },
+    )
+
+
+@pytest.fixture
+def logic_malformed_assertions_message():
+    """Logic assertion where assertions is a string instead of a list."""
+    return AgentMessage(
+        sender_agent_id="reasoning-agent-006",
+        receiver_agent_id="planner-agent-007",
+        payload_type=PayloadType.LOGIC_ASSERTION,
+        payload={"assertions": "not-a-list"},
+    )
+
+
+@pytest.fixture
+def logic_non_dict_assertion_message():
+    """Logic assertion containing a non-mapping entry."""
+    return AgentMessage(
+        sender_agent_id="reasoning-agent-006",
+        receiver_agent_id="planner-agent-007",
+        payload_type=PayloadType.LOGIC_ASSERTION,
+        payload={"assertions": ["not-a-mapping"]},
+    )
+
+
+@pytest.fixture
+def financial_missing_amount_line_item_message():
+    """Financial payload with a line item missing the amount key."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("0.00"),
+                "line_items": [{"description": "Free item", "quantity": 1}],
+            },
+        },
+    )
+
+
+@pytest.fixture
+def logic_missing_claim_assertion_message():
+    """Logic assertion with a mapping missing the claim key."""
+    return AgentMessage(
+        sender_agent_id="reasoning-agent-006",
+        receiver_agent_id="planner-agent-007",
+        payload_type=PayloadType.LOGIC_ASSERTION,
+        payload={"assertions": [{"negated": False}]},
+    )
+
+
+@pytest.fixture
+def financial_null_amount_line_item_message():
+    """Financial payload with a line item where amount is null."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("0.00"),
+                "line_items": [{"description": "Item", "amount": None, "quantity": 1}],
+            },
+        },
+    )
+
+
+@pytest.fixture
+def financial_null_quantity_line_item_message():
+    """Financial payload with a line item where quantity is null."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("100.00"),
+                "line_items": [
+                    {
+                        "description": "Item",
+                        "amount": Decimal("50.00"),
+                        "quantity": None,
+                    }
+                ],
+            },
+        },
+    )
+
+
+@pytest.fixture
+def financial_non_numeric_claimed_total_message():
+    """Financial payload where claimed_total is a non-numeric string."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": "N/A",
+                "line_items": [
+                    {"description": "Item", "amount": Decimal("50.00"), "quantity": 1}
+                ],
+            },
+        },
+    )
+
+
+@pytest.fixture
+def financial_non_numeric_amount_message():
+    """Financial payload where a line item amount is a non-numeric string."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("50.00"),
+                "line_items": [
+                    {"description": "Item", "amount": "free", "quantity": 1}
+                ],
+            },
+        },
     )
 
 

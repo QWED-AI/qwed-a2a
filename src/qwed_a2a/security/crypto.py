@@ -14,7 +14,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -88,7 +88,7 @@ class JtiRegistry:
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
 
-    def check_and_register(self, jti: str, now: Optional[float] = None) -> bool:
+    def check_and_register(self, jti: str, now: float | None = None) -> bool:
         """
         Return True and register jti if it has never been seen.
         Return False (without registering) if jti is already in the registry.
@@ -110,7 +110,7 @@ class JtiRegistry:
     def _evict(self, now: float) -> None:
         """Remove entries older than TTL. Runs in O(k) where k = expired entries."""
         while self._seen:
-            oldest_jti, timestamp = next(iter(self._seen.items()))
+            _, timestamp = next(iter(self._seen.items()))
             if now - timestamp > self._ttl:
                 self._seen.popitem(last=False)
             else:
@@ -126,7 +126,7 @@ class JtiRegistry:
 # logical deployment. QWED_A2A_DEPLOYMENT_ID MUST be set in the environment;
 # a random fallback would silently make cross-process verification always
 # fail (a different process would get a different ID), violating fail-closed.
-_DEPLOYMENT_ID: Optional[str] = os.environ.get("QWED_A2A_DEPLOYMENT_ID")
+_DEPLOYMENT_ID: str | None = os.environ.get("QWED_A2A_DEPLOYMENT_ID")
 if not _DEPLOYMENT_ID:
     raise RuntimeError(
         "QWED_A2A_DEPLOYMENT_ID environment variable is not set. "
@@ -145,7 +145,7 @@ class _QwedA2AClaims(BaseModel):
     sender: str
     receiver: str
     deployment_id: str
-    session_id: Optional[str] = None
+    session_id: str | None = None
 
 
 class A2ACryptoService:
@@ -165,12 +165,12 @@ class A2ACryptoService:
         self,
         issuer_id: str = "did:qwed:a2a:local",
         validity_seconds: int = 300,
-        pem_key: Optional[str] = None,
+        pem_key: str | None = None,
     ):
         self.issuer_id = issuer_id
         self.validity_seconds = validity_seconds
         self._pem_key = pem_key
-        self._key_pair: Optional[KeyPair] = None
+        self._key_pair: KeyPair | None = None
         self._key_lock = threading.Lock()
         # Each service instance owns its replay registry.
         # TTL is aligned with the validity window so entries are never
@@ -210,12 +210,12 @@ class A2ACryptoService:
                 ) from exc
 
             if not isinstance(private_key, ec.EllipticCurvePrivateKey):
-                raise RuntimeError(
+                raise RuntimeError(  # noqa: TRY004  # deployment config error, not user-data type error
                     "QWED_A2A_SIGNING_KEY_PEM must be an EC P-256 (prime256v1) private key. "
                     f"Got {type(private_key).__name__}."
                 )
             if not isinstance(private_key.curve, ec.SECP256R1):
-                raise RuntimeError(
+                raise RuntimeError(  # noqa: TRY004  # deployment config error, not user-data type error
                     "QWED_A2A_SIGNING_KEY_PEM must use curve SECP256R1 (prime256v1, P-256). "
                     f"Got curve {private_key.curve.name}."
                 )
@@ -272,7 +272,7 @@ class A2ACryptoService:
         sender_id: str,
         receiver_id: str,
         payload_hash: str,
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
     ) -> str:
         """
         Create a signed JWT attestation for a verification verdict.
@@ -336,7 +336,7 @@ class A2ACryptoService:
 
     def verify_attestation(
         self, token: str
-    ) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+    ) -> tuple[bool, dict[str, Any] | None, str | None]:
         """
         Verify a JWT attestation token.
 

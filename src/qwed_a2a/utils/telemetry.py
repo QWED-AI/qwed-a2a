@@ -9,8 +9,9 @@ import functools
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 # Imported here (not at top) to avoid circular imports —
 # schema is a leaf module with no telemetry dependency.
@@ -39,8 +40,8 @@ class InterceptMetrics:
     total_heuristic_pass: int = 0
     total_errors: int = 0
     total_latency_ms: float = 0.0
-    by_engine: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    by_sender: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    by_engine: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    by_sender: dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
     @property
     def average_latency_ms(self) -> float:
@@ -54,7 +55,7 @@ class InterceptMetrics:
             return 0.0
         return self.total_blocked / self.total_intercepts
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "total_intercepts": self.total_intercepts,
             "total_forwarded": self.total_forwarded,
@@ -85,7 +86,7 @@ def reset_metrics() -> None:
 
 
 def init_telemetry(
-    sentry_dsn: Optional[str] = None,
+    sentry_dsn: str | None = None,
     environment: str = "development",
     log_level: int = logging.INFO,
 ) -> None:
@@ -123,7 +124,7 @@ def init_telemetry(
 
 def record_intercept(
     status: VerdictStatus,
-    engine: Optional[str],
+    engine: str | None,
     sender_id: str,
     latency_ms: float,
 ) -> None:

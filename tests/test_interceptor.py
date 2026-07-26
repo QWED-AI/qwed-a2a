@@ -45,6 +45,149 @@ class TestInterceptorFinancial:
         assert Decimal(str(verdict.details["computed_total"])) == Decimal("150.00")
         assert Decimal(str(verdict.details["claimed_total"])) == Decimal("999.99")
 
+    async def test_empty_financial_returns_unverifiable(
+        self, interceptor, empty_financial_message
+    ):
+        """Empty financial payload must return UNVERIFIABLE, not FORWARDED."""
+        verdict = await interceptor.intercept(
+            empty_financial_message, trace_id="t_fin_empty"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "claimed_total" in verdict.reason
+
+    async def test_missing_claimed_total_returns_unverifiable(
+        self, interceptor, financial_missing_claimed_total_message
+    ):
+        """Missing claimed_total with line_items present returns UNVERIFIABLE."""
+        verdict = await interceptor.intercept(
+            financial_missing_claimed_total_message, trace_id="t_fin_missing_ct"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "claimed_total" in verdict.reason
+
+    async def test_empty_line_items_returns_unverifiable(
+        self, interceptor, financial_empty_line_items_message
+    ):
+        """Empty line_items with claimed_total present returns UNVERIFIABLE."""
+        verdict = await interceptor.intercept(
+            financial_empty_line_items_message, trace_id="t_fin_empty_li"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "line_items" in verdict.reason
+
+    async def test_malformed_data_returns_unverifiable(
+        self, interceptor, financial_malformed_data_message
+    ):
+        """data=None returns UNVERIFIABLE, not a generic engine error."""
+        verdict = await interceptor.intercept(
+            financial_malformed_data_message, trace_id="t_fin_mal_data"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "data" in verdict.reason
+
+    async def test_malformed_line_items_returns_unverifiable(
+        self, interceptor, financial_malformed_line_items_message
+    ):
+        """Non-list line_items returns UNVERIFIABLE, not a generic error."""
+        verdict = await interceptor.intercept(
+            financial_malformed_line_items_message, trace_id="t_fin_mal_li"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "line_items" in verdict.reason
+
+    async def test_non_dict_line_item_returns_unverifiable(
+        self, interceptor, financial_non_dict_line_item_message
+    ):
+        """Non-mapping line item entry returns UNVERIFIABLE."""
+        verdict = await interceptor.intercept(
+            financial_non_dict_line_item_message, trace_id="t_fin_non_dict_item"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "line item" in verdict.reason
+
+    async def test_missing_amount_line_item_returns_unverifiable(
+        self, interceptor, financial_missing_amount_line_item_message
+    ):
+        """Line item without amount key returns UNVERIFIABLE, not FORWARDED."""
+        verdict = await interceptor.intercept(
+            financial_missing_amount_line_item_message, trace_id="t_fin_missing_amt"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "amount" in verdict.reason
+
+    async def test_null_amount_line_item_returns_unverifiable(
+        self, interceptor, financial_null_amount_line_item_message
+    ):
+        """Line item with null amount returns UNVERIFIABLE, not crashing."""
+        verdict = await interceptor.intercept(
+            financial_null_amount_line_item_message, trace_id="t_fin_null_amt"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "amount" in verdict.reason
+
+    async def test_null_quantity_line_item_returns_unverifiable(
+        self, interceptor, financial_null_quantity_line_item_message
+    ):
+        """Line item with null quantity returns UNVERIFIABLE, not crashing."""
+        verdict = await interceptor.intercept(
+            financial_null_quantity_line_item_message, trace_id="t_fin_null_qty"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "quantity" in verdict.reason
+
+    async def test_non_numeric_claimed_total_returns_unverifiable(
+        self, interceptor, financial_non_numeric_claimed_total_message
+    ):
+        """Non-numeric claimed_total returns UNVERIFIABLE, not crashing."""
+        verdict = await interceptor.intercept(
+            financial_non_numeric_claimed_total_message, trace_id="t_fin_bad_ct"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "claimed_total" in verdict.reason
+
+    async def test_non_numeric_amount_returns_unverifiable(
+        self, interceptor, financial_non_numeric_amount_message
+    ):
+        """Non-numeric line item amount returns UNVERIFIABLE, not crashing."""
+        verdict = await interceptor.intercept(
+            financial_non_numeric_amount_message, trace_id="t_fin_bad_amt"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "amount" in verdict.reason
+
 
 @pytest.mark.asyncio
 class TestInterceptorCode:
@@ -80,6 +223,58 @@ class TestInterceptorLogic:
         assert verdict.status == VerdictStatus.BLOCKED
         assert "contradiction" in verdict.reason.lower()
         assert verdict.engine_used == "logic_guard"
+
+    async def test_empty_logic_returns_unverifiable(
+        self, interceptor, empty_logic_message
+    ):
+        """Empty logic assertions must return UNVERIFIABLE, not FORWARDED."""
+        verdict = await interceptor.intercept(
+            empty_logic_message, trace_id="t_logic_empty"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "logic_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "assertions" in verdict.reason
+
+    async def test_malformed_assertions_returns_unverifiable(
+        self, interceptor, logic_malformed_assertions_message
+    ):
+        """Non-list assertions returns UNVERIFIABLE, not a generic error."""
+        verdict = await interceptor.intercept(
+            logic_malformed_assertions_message, trace_id="t_logic_mal"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "logic_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "assertions" in verdict.reason
+
+    async def test_non_dict_assertion_returns_unverifiable(
+        self, interceptor, logic_non_dict_assertion_message
+    ):
+        """Non-mapping assertion entry returns UNVERIFIABLE."""
+        verdict = await interceptor.intercept(
+            logic_non_dict_assertion_message, trace_id="t_logic_non_dict"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "logic_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "assertion" in verdict.reason
+
+    async def test_missing_claim_assertion_returns_unverifiable(
+        self, interceptor, logic_missing_claim_assertion_message
+    ):
+        """Assertion without claim key returns UNVERIFIABLE, not FORWARDED."""
+        verdict = await interceptor.intercept(
+            logic_missing_claim_assertion_message, trace_id="t_logic_missing_claim"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "logic_guard"
+        assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "claim" in verdict.reason
 
 
 @pytest.mark.asyncio

@@ -11,8 +11,8 @@ import ast
 import json
 import re
 import time
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Dict, Optional
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any, ClassVar
 
 from qwed_a2a.protocol.schema import (
     AgentMessage,
@@ -21,7 +21,7 @@ from qwed_a2a.protocol.schema import (
     VerdictStatus,
     VerificationVerdict,
 )
-from qwed_a2a.security.crypto import A2ACryptoService, HAS_CRYPTO
+from qwed_a2a.security.crypto import HAS_CRYPTO, A2ACryptoService
 from qwed_a2a.security.trust_boundary import TrustBoundary
 from qwed_a2a.utils.telemetry import logger, record_intercept, trace_intercept
 
@@ -41,9 +41,9 @@ class A2AVerificationInterceptor:
 
     def __init__(
         self,
-        config: Optional[InterceptorConfig] = None,
-        crypto_service: Optional[A2ACryptoService] = None,
-        trust_boundary: Optional[TrustBoundary] = None,
+        config: InterceptorConfig | None = None,
+        crypto_service: A2ACryptoService | None = None,
+        trust_boundary: TrustBoundary | None = None,
     ):
         self.config = config or InterceptorConfig()
         self.trust = trust_boundary or TrustBoundary(default_allow=False)
@@ -104,7 +104,7 @@ class A2AVerificationInterceptor:
         # --- Step 2: Route to verification engine ---
         try:
             engine_result = self._route_to_engine(message)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # fail-closed: catch all engine errors
             logger.error("Verification engine error: %s", exc)
             status = (
                 VerdictStatus.BLOCKED
@@ -166,7 +166,7 @@ class A2AVerificationInterceptor:
         self._record(verdict, message.sender_agent_id, start_time)
         return verdict
 
-    def _route_to_engine(self, message: AgentMessage) -> Dict[str, Any]:
+    def _route_to_engine(self, message: AgentMessage) -> dict[str, Any]:
         """
         Route the message payload to the appropriate verification engine.
 
@@ -203,37 +203,45 @@ class A2AVerificationInterceptor:
             "reason": "No verification engine available for this payload type",
         }
 
-    def _verify_financial(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _verify_financial(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Lightweight deterministic financial verification.
 
         Checks mathematical claims in the payload using Decimal arithmetic.
         All comparisons stay in Decimal to avoid floating-point precision loss.
         """
-        data = payload.get("data", {})
-        claimed_total = data.get("claimed_total")
-        line_items = data.get("line_items", [])
+        err = self._validate_financial_payload(payload)
+        if err is not None:
+            return err
 
-        if claimed_total is None or not line_items:
-            return {
-                "verified": True,
-                "engine": "finance_guard",
-                "reason": "No verifiable financial claims in payload",
-            }
+        data = payload["data"]
+        claimed_total = data["claimed_total"]
+        line_items = data["line_items"]
 
         # Sum line items with Decimal precision
-        computed_total = Decimal("0")
+        computed_total = Decimal(0)
         for item in line_items:
-            amount = item.get("amount", 0)
-            quantity = item.get("quantity", 1)
-            computed_total += Decimal(str(amount)) * Decimal(str(quantity))
+            computed_total += Decimal(str(item["amount"])) * Decimal(
+                str(item.get("quantity", 1))
+            )
 
         computed_total = computed_total.quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
-        claimed_decimal = Decimal(str(claimed_total)).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
+        try:
+            claimed_decimal = Decimal(str(claimed_total)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        except (InvalidOperation, TypeError, ValueError):
+            return {
+                "verified": False,
+                "status": "unverifiable",
+                "engine": "finance_guard",
+                "reason": (
+                    "FINANCIAL_TRANSACTION payload contains malformed field: "
+                    "data.claimed_total must be a numeric value."
+                ),
+            }
         tolerance = Decimal("0.01")
 
         if abs(computed_total - claimed_decimal) > tolerance:
@@ -255,7 +263,108 @@ class A2AVerificationInterceptor:
             "computed_total": float(computed_total),
         }
 
-    def _verify_logic(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _validate_financial_payload(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """
+        Validate structure and types of a FINANCIAL_TRANSACTION payload.
+
+        Returns an UNVERIFIABLE result dict if invalid, or None if the payload
+        passes all structural and type checks.
+        """
+        data = payload.get("data", {})
+        if not isinstance(data, dict):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload missing required field: "
+                "data must be a mapping for verification."
+            )
+        claimed_total = data.get("claimed_total")
+        line_items = data.get("line_items", [])
+
+        if not isinstance(line_items, list):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload missing required field: "
+                "data.line_items must be a list for verification."
+            )
+
+        if claimed_total is None:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload missing required field: "
+                "data.claimed_total must be present for verification."
+            )
+
+        try:
+            dec_claimed = Decimal(str(claimed_total))
+        except (InvalidOperation, TypeError, ValueError):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains malformed field: "
+                "data.claimed_total must be a numeric value."
+            )
+        if not dec_claimed.is_finite():
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains non-finite field: "
+                "data.claimed_total must be a finite numeric value."
+            )
+
+        if not line_items:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload missing required field: "
+                "data.line_items must be present for verification."
+            )
+
+        for item in line_items:
+            err = self._validate_line_item(item)
+            if err is not None:
+                return err
+        return None
+
+    def _validate_line_item(self, item: Any) -> dict[str, Any] | None:
+        """
+        Validate a single line item in a FINANCIAL_TRANSACTION payload.
+
+        Returns an UNVERIFIABLE result dict if invalid, or None if the item
+        passes all structural and type checks.
+        """
+        if not isinstance(item, dict):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains malformed "
+                "line item: each line item must be a mapping."
+            )
+        if "amount" not in item or item["amount"] is None:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains incomplete "
+                "line item: each line item must include a non-null amount."
+            )
+        if "quantity" in item and item["quantity"] is None:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains incomplete "
+                "line item: quantity must not be null."
+            )
+        try:
+            dec_amount = Decimal(str(item["amount"]))
+            dec_quantity = Decimal(str(item.get("quantity", 1)))
+        except (InvalidOperation, TypeError, ValueError):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains malformed "
+                "line item: amount and quantity must be numeric values."
+            )
+        if not (dec_amount.is_finite() and dec_quantity.is_finite()):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains non-finite "
+                "line item: amount and quantity must be finite numeric values."
+            )
+        return None
+
+    def _finance_unverifiable(self, reason: str) -> dict[str, Any]:
+        """Build a finance_guard UNVERIFIABLE result dict."""
+        return {
+            "verified": False,
+            "status": "unverifiable",
+            "engine": "finance_guard",
+            "reason": reason,
+        }
+
+    def _verify_logic(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Lightweight logic assertion verification.
 
@@ -263,11 +372,26 @@ class A2AVerificationInterceptor:
         """
         assertions = payload.get("assertions", [])
 
+        if not isinstance(assertions, list):
+            return {
+                "verified": False,
+                "status": "unverifiable",
+                "engine": "logic_guard",
+                "reason": (
+                    "LOGIC_ASSERTION payload missing required field: "
+                    "assertions must be a list for verification."
+                ),
+            }
+
         if not assertions:
             return {
-                "verified": True,
+                "verified": False,
+                "status": "unverifiable",
                 "engine": "logic_guard",
-                "reason": "No assertions to verify",
+                "reason": (
+                    "LOGIC_ASSERTION payload missing required field: "
+                    "assertions list must be non-empty for verification."
+                ),
             }
 
         # Check for direct contradictions (P and NOT P)
@@ -275,13 +399,34 @@ class A2AVerificationInterceptor:
         negative_claims = set()
 
         for assertion in assertions:
-            claim = assertion.get("claim", "")
+            if not isinstance(assertion, dict):
+                return {
+                    "verified": False,
+                    "status": "unverifiable",
+                    "engine": "logic_guard",
+                    "reason": (
+                        "LOGIC_ASSERTION payload contains malformed "
+                        "assertion entry: each assertion must be a mapping."
+                    ),
+                }
+            claim = assertion.get("claim")
+            if not isinstance(claim, str) or not claim.strip():
+                return {
+                    "verified": False,
+                    "status": "unverifiable",
+                    "engine": "logic_guard",
+                    "reason": (
+                        "LOGIC_ASSERTION payload contains incomplete "
+                        "assertion entry: each assertion must include a non-empty string claim."
+                    ),
+                }
             negated = assertion.get("negated", False)
 
+            stripped = claim.strip()
             if negated:
-                negative_claims.add(claim)
+                negative_claims.add(stripped)
             else:
-                positive_claims.add(claim)
+                positive_claims.add(stripped)
 
         contradictions = sorted(positive_claims & negative_claims)
 
@@ -322,7 +467,7 @@ class A2AVerificationInterceptor:
     #   subprocess.run() — dangerous, receiver IS subprocess
     # Limitation: import aliasing (e.g., `import subprocess as sp; sp.run()`)
     # is not caught here — the regex heuristic layer provides partial coverage.
-    _DANGEROUS_RECEIVER_METHODS: Dict[str, frozenset] = {
+    _DANGEROUS_RECEIVER_METHODS: ClassVar[dict[str, frozenset]] = {
         "subprocess": frozenset(
             {"run", "Popen", "call", "check_output", "check_call", "popen"}
         ),
@@ -341,7 +486,7 @@ class A2AVerificationInterceptor:
     # ── Regex patterns as secondary heuristic layer ───────────────────────────
     # Catch obfuscation patterns that survive AST parsing: encoded strings,
     # getattr-based lookups, and dynamic attribute construction.
-    _DANGEROUS_PATTERNS: Dict[str, re.Pattern] = {
+    _DANGEROUS_PATTERNS: ClassVar[dict[str, re.Pattern]] = {
         "getattr_builtin": re.compile(
             r"""getattr\s*\(\s*(?:__builtins__|builtins)\s*""", re.IGNORECASE
         ),
@@ -356,7 +501,7 @@ class A2AVerificationInterceptor:
         "os_popen": re.compile(r"""\bos\.popen\s*\(""", re.IGNORECASE),
     }
 
-    def _verify_code(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _verify_code(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Heuristic code security scan: AST structural analysis + regex patterns.
 
@@ -395,37 +540,7 @@ class A2AVerificationInterceptor:
                 "reason": f"Code failed AST parsing — cannot verify: {exc}",
             }
 
-        ast_threats: list = []
-        for node in ast.walk(tree):
-            # Direct dangerous function calls: eval(...), exec(...), compile(...)
-            if isinstance(node, ast.Call):
-                func = node.func
-                if isinstance(func, ast.Name) and func.id in self._DANGEROUS_CALL_NAMES:
-                    ast_threats.append(f"call:{func.id}()")
-                # Receiver-scoped attribute calls: subprocess.run(...), os.system(...)
-                # Only blocked when called on a known dangerous receiver — this avoids
-                # false positives from legitimate .run()/.call() on other objects.
-                elif isinstance(func, ast.Attribute):
-                    if isinstance(func.value, ast.Name):
-                        receiver = func.value.id
-                        dangerous_methods = self._DANGEROUS_RECEIVER_METHODS.get(
-                            receiver, frozenset()
-                        )
-                        if func.attr in dangerous_methods:
-                            ast_threats.append(f"call:{receiver}.{func.attr}()")
-
-            # Dangerous imports: import subprocess, from ctypes import ...
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    root = alias.name.split(".")[0]
-                    if root in self._DANGEROUS_IMPORTS:
-                        ast_threats.append(f"import:{root}")
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    root = node.module.split(".")[0]
-                    if root in self._DANGEROUS_IMPORTS:
-                        ast_threats.append(f"import:{root}")
-
+        ast_threats = self._scan_ast_threats(tree)
         if ast_threats:
             return {
                 "verified": False,
@@ -439,11 +554,7 @@ class A2AVerificationInterceptor:
             }
 
         # ── Layer 2: Regex heuristic scan ─────────────────────────────────────
-        regex_threats: list = []
-        for label, pattern in self._DANGEROUS_PATTERNS.items():
-            if pattern.search(code):
-                regex_threats.append(label)
-
+        regex_threats = self._scan_regex_threats(code)
         if regex_threats:
             return {
                 "verified": False,
@@ -469,14 +580,74 @@ class A2AVerificationInterceptor:
             "analysis": "ast+regex",
         }
 
+    def _scan_ast_threats(self, tree: ast.AST) -> list[str]:
+        """Collect threats from an AST tree: dangerous calls and imports."""
+        threats: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                threats.extend(self._scan_ast_call(node))
+            elif isinstance(node, ast.Import):
+                threats.extend(self._scan_ast_import(node))
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                threats.extend(self._scan_ast_import_from(node))
+        return threats
+
+    def _scan_ast_call(self, node: ast.Call) -> list[str]:
+        """Detect dangerous function calls in a single AST Call node."""
+        func = node.func
+        # Direct dangerous calls: eval(...), exec(...), compile(...)
+        if isinstance(func, ast.Name) and func.id in self._DANGEROUS_CALL_NAMES:
+            return [f"call:{func.id}()"]
+        # Receiver-scoped attribute calls: subprocess.run(...), os.system(...)
+        # Only blocked when called on a known dangerous receiver — this avoids
+        # false positives from legitimate .run()/.call() on other objects.
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            receiver = func.value.id
+            dangerous_methods = self._DANGEROUS_RECEIVER_METHODS.get(
+                receiver, frozenset()
+            )
+            if func.attr in dangerous_methods:
+                return [f"call:{receiver}.{func.attr}()"]
+        return []
+
+    def _scan_ast_import(self, node: ast.Import) -> list[str]:
+        """Detect dangerous module imports in a single AST Import node."""
+        return [
+            f"import:{alias.name.split('.')[0]}"
+            for alias in node.names
+            if alias.name.split(".")[0] in self._DANGEROUS_IMPORTS
+        ]
+
+    def _scan_ast_import_from(self, node: ast.ImportFrom) -> list[str]:
+        """Detect threats in a single AST ImportFrom node."""
+        threats: list[str] = []
+        root = node.module.split(".")[0]
+        if root in self._DANGEROUS_IMPORTS:
+            threats.append(f"import:{root}")
+        if root == "os":
+            for alias in node.names:
+                if alias.name in self._DANGEROUS_RECEIVER_METHODS.get(
+                    "os", frozenset()
+                ):
+                    threats.append(f"import:os.{alias.name}")
+        return threats
+
+    def _scan_regex_threats(self, code: str) -> list[str]:
+        """Collect threats from the regex heuristic layer."""
+        return [
+            label
+            for label, pattern in self._DANGEROUS_PATTERNS.items()
+            if pattern.search(code)
+        ]
+
     def _build_verdict(
         self,
         trace_id: str,
         status: VerdictStatus,
-        reason: Optional[str],
+        reason: str | None,
         engine: str,
         message: AgentMessage,
-        details: Optional[Dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ) -> VerificationVerdict:
         """Build a VerificationVerdict, signing with JWT unless status is UNVERIFIABLE.
 
