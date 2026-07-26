@@ -56,9 +56,9 @@ class TrustEntry:
     """Scoped, expiring trust grant for a single agent."""
 
     agent_id: str
-    allowed_receivers: Optional[Set[str]] = None
-    allowed_payload_types: Optional[Set[str]] = None
-    valid_until: Optional[float] = None
+    allowed_receivers: Set[str] | None = None
+    allowed_payload_types: Set[str] | None = None
+    valid_until: float | None = None
     granted_by: str = "config"
     granted_at: float = field(default_factory=time.time)
 
@@ -130,9 +130,9 @@ class TrustBoundary:
     def trust_agent(
         self,
         agent_id: str,
-        allowed_receivers: Optional[Set[str]] = None,
-        allowed_payload_types: Optional[Set[str]] = None,
-        valid_until: Optional[float] = None,
+        allowed_receivers: Set[str] | None = None,
+        allowed_payload_types: Set[str] | None = None,
+        valid_until: float | None = None,
         granted_by: str = "config",
     ) -> None:
         """Grant scoped, expiring trust to an agent."""
@@ -173,7 +173,7 @@ class TrustBoundary:
         """Unblock a specific agent pair."""
         self._blocked_pairs.discard((sender_id, receiver_id))
 
-    def is_trusted(self, agent_id: str, now: Optional[float] = None) -> bool:
+    def is_trusted(self, agent_id: str, now: float | None = None) -> bool:
         """Check if an agent has a valid (non-expired) trust entry."""
         if now is None:
             now = time.time()
@@ -268,10 +268,10 @@ class TrustBoundary:
         self,
         sender_id: str,
         receiver_id: str,
-        payload_type: Optional[str],
+        payload_type: str | None,
         now: float,
         enforce_allowlist: bool = True,
-    ) -> Optional[Tuple[bool, str]]:
+    ) -> Tuple[bool, str] | None:
         """Check trust entries for sender/receiver. Returns rejection tuple or None.
 
         QWED deterministic philosophy: expired = non-existent.
@@ -325,8 +325,8 @@ class TrustBoundary:
         return None
 
     def evaluate(
-        self, sender_id: str, receiver_id: str, payload_type: Optional[str] = None
-    ) -> Tuple[bool, Optional[str]]:
+        self, sender_id: str, receiver_id: str, payload_type: str | None = None
+    ) -> Tuple[bool, str | None]:
         """Evaluate whether a sender->receiver communication is allowed.
 
         Trust is directional: the sender must be explicitly trusted when

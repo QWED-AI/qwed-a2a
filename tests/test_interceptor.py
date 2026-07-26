@@ -146,6 +146,28 @@ class TestInterceptorFinancial:
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
 
+    async def test_non_numeric_claimed_total_returns_unverifiable(
+        self, interceptor, financial_non_numeric_claimed_total_message
+    ):
+        """Non-numeric claimed_total returns UNVERIFIABLE, not crashing."""
+        verdict = await interceptor.intercept(
+            financial_non_numeric_claimed_total_message, trace_id="t_fin_bad_ct"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+
+    async def test_non_numeric_amount_returns_unverifiable(
+        self, interceptor, financial_non_numeric_amount_message
+    ):
+        """Non-numeric line item amount returns UNVERIFIABLE, not crashing."""
+        verdict = await interceptor.intercept(
+            financial_non_numeric_amount_message, trace_id="t_fin_bad_amt"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+
 
 @pytest.mark.asyncio
 class TestInterceptorCode:

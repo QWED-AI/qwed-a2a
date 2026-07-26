@@ -61,11 +61,11 @@ class AgentMessage(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="ISO 8601 timestamp of message creation",
     )
-    signature: Optional[str] = Field(
+    signature: str | None = Field(
         default=None,
         description="Optional JWT signature from the sender for tamper detection",
     )
-    metadata: Optional[Dict[str, Any]] = Field(
+    metadata: Dict[str, Any] | None = Field(
         default=None,
         description="Optional metadata (correlation IDs, trace context, etc.)",
     )
@@ -87,24 +87,24 @@ class VerificationVerdict(BaseModel):
     status: VerdictStatus = Field(
         ..., description="Whether the message was forwarded or blocked"
     )
-    reason: Optional[str] = Field(
+    reason: str | None = Field(
         default=None, description="Human-readable explanation for blocking"
     )
     audit_trace_id: str = Field(
         ..., description="Unique trace ID for this verification event"
     )
-    attestation_jwt: Optional[str] = Field(
+    attestation_jwt: str | None = Field(
         default=None,
         description="Signed JWT attestation proving the verification took place",
     )
-    engine_used: Optional[str] = Field(
+    engine_used: str | None = Field(
         default=None, description="Which verification engine handled the check"
     )
     verified_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="Timestamp of the verification",
     )
-    details: Optional[Dict[str, Any]] = Field(
+    details: Dict[str, Any] | None = Field(
         default=None, description="Raw verification engine output"
     )
 
@@ -133,6 +133,6 @@ class InterceptorConfig(BaseModel):
         le=10_485_760,
         description="Maximum payload size (1MB default)",
     )
-    trusted_agents: Optional[List[str]] = Field(
+    trusted_agents: List[str] | None = Field(
         default=None, description="Allowlist of agent IDs that bypass verification"
     )

@@ -41,9 +41,9 @@ class A2AVerificationInterceptor:
 
     def __init__(
         self,
-        config: Optional[InterceptorConfig] = None,
-        crypto_service: Optional[A2ACryptoService] = None,
-        trust_boundary: Optional[TrustBoundary] = None,
+        config: InterceptorConfig | None = None,
+        crypto_service: A2ACryptoService | None = None,
+        trust_boundary: TrustBoundary | None = None,
     ):
         self.config = config or InterceptorConfig()
         self.trust = trust_boundary or TrustBoundary(default_allow=False)
@@ -235,14 +235,25 @@ class A2AVerificationInterceptor:
                 ),
             }
 
-        if claimed_total is None or not line_items:
+        if claimed_total is None:
             return {
                 "verified": False,
                 "status": "unverifiable",
                 "engine": "finance_guard",
                 "reason": (
-                    "FINANCIAL_TRANSACTION payload missing required fields: "
-                    "data.claimed_total and data.line_items must be present for verification."
+                    "FINANCIAL_TRANSACTION payload missing required field: "
+                    "data.claimed_total must be present for verification."
+                ),
+            }
+
+        if not line_items:
+            return {
+                "verified": False,
+                "status": "unverifiable",
+                "engine": "finance_guard",
+                "reason": (
+                    "FINANCIAL_TRANSACTION payload missing required field: "
+                    "data.line_items must be present for verification."
                 ),
             }
 
@@ -281,14 +292,38 @@ class A2AVerificationInterceptor:
                 }
             amount = item.get("amount", 0)
             quantity = item.get("quantity", 1)
-            computed_total += Decimal(str(amount)) * Decimal(str(quantity))
+            try:
+                dec_amount = Decimal(str(amount))
+                dec_quantity = Decimal(str(quantity))
+            except Exception:
+                return {
+                    "verified": False,
+                    "status": "unverifiable",
+                    "engine": "finance_guard",
+                    "reason": (
+                        "FINANCIAL_TRANSACTION payload contains malformed "
+                        "line item: amount and quantity must be numeric values."
+                    ),
+                }
+            computed_total += dec_amount * dec_quantity
 
         computed_total = computed_total.quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
-        claimed_decimal = Decimal(str(claimed_total)).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
+        try:
+            claimed_decimal = Decimal(str(claimed_total)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        except Exception:
+            return {
+                "verified": False,
+                "status": "unverifiable",
+                "engine": "finance_guard",
+                "reason": (
+                    "FINANCIAL_TRANSACTION payload contains malformed field: "
+                    "data.claimed_total must be a numeric value."
+                ),
+            }
         tolerance = Decimal("0.01")
 
         if abs(computed_total - claimed_decimal) > tolerance:
@@ -563,10 +598,10 @@ class A2AVerificationInterceptor:
         self,
         trace_id: str,
         status: VerdictStatus,
-        reason: Optional[str],
+        reason: str | None,
         engine: str,
         message: AgentMessage,
-        details: Optional[Dict[str, Any]] = None,
+        details: Dict[str, Any] | None = None,
     ) -> VerificationVerdict:
         """Build a VerificationVerdict, signing with JWT unless status is UNVERIFIABLE.
 

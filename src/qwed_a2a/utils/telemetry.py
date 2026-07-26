@@ -85,7 +85,7 @@ def reset_metrics() -> None:
 
 
 def init_telemetry(
-    sentry_dsn: Optional[str] = None,
+    sentry_dsn: str | None = None,
     environment: str = "development",
     log_level: int = logging.INFO,
 ) -> None:
@@ -123,7 +123,7 @@ def init_telemetry(
 
 def record_intercept(
     status: VerdictStatus,
-    engine: Optional[str],
+    engine: str | None,
     sender_id: str,
     latency_ms: float,
 ) -> None:

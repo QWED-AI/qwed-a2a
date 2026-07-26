@@ -322,6 +322,38 @@ def financial_null_quantity_line_item_message():
 
 
 @pytest.fixture
+def financial_non_numeric_claimed_total_message():
+    """Financial payload where claimed_total is a non-numeric string."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": "N/A",
+                "line_items": [{"description": "Item", "amount": Decimal("50.00"), "quantity": 1}],
+            },
+        },
+    )
+
+
+@pytest.fixture
+def financial_non_numeric_amount_message():
+    """Financial payload where a line item amount is a non-numeric string."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("50.00"),
+                "line_items": [{"description": "Item", "amount": "free", "quantity": 1}],
+            },
+        },
+    )
+
+
+@pytest.fixture
 def contradictory_logic_message():
     """A logic assertion message with contradictions."""
     return AgentMessage(
