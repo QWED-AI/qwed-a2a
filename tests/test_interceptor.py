@@ -124,6 +124,28 @@ class TestInterceptorFinancial:
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
 
+    async def test_null_amount_line_item_returns_unverifiable(
+        self, interceptor, financial_null_amount_line_item_message
+    ):
+        """Line item with null amount returns UNVERIFIABLE, not crashing."""
+        verdict = await interceptor.intercept(
+            financial_null_amount_line_item_message, trace_id="t_fin_null_amt"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+
+    async def test_null_quantity_line_item_returns_unverifiable(
+        self, interceptor, financial_null_quantity_line_item_message
+    ):
+        """Line item with null quantity returns UNVERIFIABLE, not crashing."""
+        verdict = await interceptor.intercept(
+            financial_null_quantity_line_item_message, trace_id="t_fin_null_qty"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+
 
 @pytest.mark.asyncio
 class TestInterceptorCode:

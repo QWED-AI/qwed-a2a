@@ -290,6 +290,38 @@ def logic_missing_claim_assertion_message():
 
 
 @pytest.fixture
+def financial_null_amount_line_item_message():
+    """Financial payload with a line item where amount is null."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("0.00"),
+                "line_items": [{"description": "Item", "amount": None, "quantity": 1}],
+            },
+        },
+    )
+
+
+@pytest.fixture
+def financial_null_quantity_line_item_message():
+    """Financial payload with a line item where quantity is null."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("100.00"),
+                "line_items": [{"description": "Item", "amount": Decimal("50.00"), "quantity": None}],
+            },
+        },
+    )
+
+
+@pytest.fixture
 def contradictory_logic_message():
     """A logic assertion message with contradictions."""
     return AgentMessage(

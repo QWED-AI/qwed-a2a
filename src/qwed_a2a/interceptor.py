@@ -259,14 +259,24 @@ class A2AVerificationInterceptor:
                         "line item: each line item must be a mapping."
                     ),
                 }
-            if "amount" not in item:
+            if "amount" not in item or item["amount"] is None:
                 return {
                     "verified": False,
                     "status": "unverifiable",
                     "engine": "finance_guard",
                     "reason": (
                         "FINANCIAL_TRANSACTION payload contains incomplete "
-                        "line item: each line item must include an amount."
+                        "line item: each line item must include a non-null amount."
+                    ),
+                }
+            if "quantity" in item and item["quantity"] is None:
+                return {
+                    "verified": False,
+                    "status": "unverifiable",
+                    "engine": "finance_guard",
+                    "reason": (
+                        "FINANCIAL_TRANSACTION payload contains incomplete "
+                        "line item: quantity must not be null."
                     ),
                 }
             amount = item.get("amount", 0)
