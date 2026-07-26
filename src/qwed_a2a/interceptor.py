@@ -8,7 +8,6 @@ This is the [QWED Core] module — all inter-agent messages flow through here.
 """
 
 import ast
-import json
 import re
 import time
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -663,9 +662,7 @@ class A2AVerificationInterceptor:
         # not a deterministic verification proof.
         if status != VerdictStatus.UNVERIFIABLE:
             try:
-                payload_hash = A2ACryptoService.hash_content(
-                    json.dumps(message.payload, sort_keys=True, default=str)
-                )
+                payload_hash = A2ACryptoService.payload_hash(message.payload)
                 attestation_jwt = self.crypto.sign_verdict(
                     trace_id=trace_id,
                     verdict_status=status.value,
