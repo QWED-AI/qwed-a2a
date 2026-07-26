@@ -9,6 +9,7 @@ Provides ECDSA P-256 JWT attestation signing and verification with:
 
 import base64
 import hashlib
+import json
 import os
 import threading
 import time
@@ -145,6 +146,22 @@ class _QwedA2AClaims(BaseModel):
     sender: str
     receiver: str
     deployment_id: str
+    session_id: str | None = None
+
+
+@dataclass
+class AttestationContext:
+    """
+    Expected context for attestation verification.
+
+    All fields compared against JWT claims — mismatch = rejection.
+    The payload is hashed internally using the same deterministic
+    method as sign_verdict() so callers never handle raw hashes.
+    """
+
+    sender_agent_id: str
+    receiver_agent_id: str
+    payload: Any
     session_id: str | None = None
 
 
@@ -335,22 +352,25 @@ class A2ACryptoService:
         return token
 
     def verify_attestation(
-        self, token: str
+        self, token: str, context: AttestationContext
     ) -> tuple[bool, dict[str, Any] | None, str | None]:
         """
-        Verify a JWT attestation token.
+        Verify a JWT attestation token against the current request context.
 
         Verification steps (all must pass):
         1. Cryptographic signature check (ES256 / ECDSA P-256)
         2. Expiry check (exp claim)
         3. Required claims check (iss, sub, iat, exp, jti)
-        4. Deployment context check — deployment_id in claims must match
-           this service's deployment_id (prevents cross-deployment replay
-           in shared-key environments)
-        5. jti replay check — rejects previously seen jti values
+        4. Structural validation of the qwed_a2a nested claim block
+        5. Deployment context check — deployment_id must match this instance
+        6. Context binding — sender, receiver, payload hash, and session
+           (if provided) all matched against the AttestationContext
+        7. jti replay check — rejects previously seen jti values
 
         Returns:
             Tuple of (is_valid, decoded_claims, error_message).
+            ``True`` means the token is cryptographically valid AND bound to
+            the provided context — not just that the signature is valid.
         """
         key_pair = self._ensure_key_pair()
 
@@ -367,17 +387,12 @@ class A2ACryptoService:
             return False, None, f"Invalid token: {exc}"
 
         # Step 4: structural validation of the qwed_a2a nested claim block.
-        # jwt.decode() only validates standard claims and the signature; it
-        # does not enforce that qwed_a2a is a mapping with required fields.
-        # A signed token with qwed_a2a set to a non-mapping would raise an
-        # AttributeError rather than returning a clean rejection tuple.
         try:
             qwed_claims = _QwedA2AClaims.model_validate(raw_claims.get("qwed_a2a", {}))
         except ValidationError:
             return False, None, "Invalid qwed_a2a claims structure"
 
-        # Step 5: deployment context check — runs after structural validation
-        # so we only act on well-formed tokens from cryptographically sound JWTs.
+        # Step 5: deployment context check
         if qwed_claims.deployment_id != _DEPLOYMENT_ID:
             return (
                 False,
@@ -385,8 +400,43 @@ class A2ACryptoService:
                 "Deployment context mismatch: token not issued by this deployment",
             )
 
-        # Step 6: replay check — must happen AFTER all other validation
-        # so we don't pollute the registry with otherwise-invalid tokens.
+        # Step 6: context binding — sender, receiver, payload hash, session
+        if qwed_claims.sender != context.sender_agent_id:
+            return (
+                False,
+                None,
+                f"Attestation sender mismatch: "
+                f"expected={context.sender_agent_id}, got={qwed_claims.sender}",
+            )
+
+        if qwed_claims.receiver != context.receiver_agent_id:
+            return (
+                False,
+                None,
+                f"Attestation receiver mismatch: "
+                f"expected={context.receiver_agent_id}, got={qwed_claims.receiver}",
+            )
+
+        expected_hash = self.hash_content(
+            json.dumps(context.payload, sort_keys=True, default=str)
+        )
+        if raw_claims.get("sub") != expected_hash:
+            return (
+                False,
+                None,
+                "Attestation payload hash mismatch — detached attestation rejected",
+            )
+
+        if context.session_id is not None and qwed_claims.session_id != context.session_id:
+            return (
+                False,
+                None,
+                f"Attestation session mismatch: "
+                f"expected={context.session_id}, got={qwed_claims.session_id}",
+            )
+
+        # Step 7: replay check — runs after context binding so we don't
+        # pollute the registry with out-of-context tokens.
         jti = raw_claims.get("jti")
         if not jti:
             return False, None, "Missing jti claim"

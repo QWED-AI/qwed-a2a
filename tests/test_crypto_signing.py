@@ -19,12 +19,13 @@ Tests mirror this by using a dedicated `verifier` fixture that shares
 the issuer's key pair but has a fresh, independent registry.
 """
 
+import json
 import time
 import threading
 
 import pytest
 
-from qwed_a2a.security.crypto import A2ACryptoService, JtiRegistry
+from qwed_a2a.security.crypto import A2ACryptoService, JtiRegistry, AttestationContext
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -72,16 +73,33 @@ def verifier(crypto_service):
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
 
+_TEST_PAYLOAD: dict[str, object] = {"data": "test"}
+_TEST_PAYLOAD_HASH: str = A2ACryptoService.hash_content(
+    json.dumps(_TEST_PAYLOAD, sort_keys=True, default=str)
+)
+
+
 def _sign(service: A2ACryptoService, trace_id: str = "t001", **kwargs) -> str:
     defaults = dict(
         verdict_status="forwarded",
         engine="finance_guard",
         sender_id="agent-A",
         receiver_id="agent-B",
-        payload_hash="sha256:abc123",
+        payload_hash=_TEST_PAYLOAD_HASH,
     )
     defaults.update(kwargs)
     return service.sign_verdict(trace_id=trace_id, **defaults)
+
+
+def _default_context(**overrides) -> AttestationContext:
+    ctx = AttestationContext(
+        sender_agent_id="agent-A",
+        receiver_agent_id="agent-B",
+        payload=_TEST_PAYLOAD,
+    )
+    for k, v in overrides.items():
+        setattr(ctx, k, v)
+    return ctx
 
 
 # ─── JtiRegistry unit tests ───────────────────────────────────────────────────
@@ -174,7 +192,7 @@ class TestJWTRoundTrip:
         """A signed verdict should verify successfully on a separate verifier."""
         token = _sign(crypto_service, trace_id="test_trace_001")
 
-        is_valid, claims, error = verifier.verify_attestation(token)
+        is_valid, claims, error = verifier.verify_attestation(token, _default_context())
         assert is_valid is True, f"Unexpected failure: {error}"
         assert error is None
         assert claims["jti"] == "test_trace_001"
@@ -190,23 +208,15 @@ class TestJWTRoundTrip:
     def test_claims_contain_deployment_id(self, crypto_service, verifier):
         """Every JWT must carry a deployment_id for context binding."""
         token = _sign(crypto_service, trace_id="t_deploy")
-        is_valid, claims, _ = verifier.verify_attestation(token)
+        is_valid, claims, _ = verifier.verify_attestation(token, _default_context())
         assert is_valid is True
         assert "deployment_id" in claims["qwed_a2a"]
         assert claims["qwed_a2a"]["deployment_id"] is not None
 
     def test_session_id_propagated_into_claims(self, crypto_service, verifier):
         """Caller-supplied session_id must appear in JWT claims."""
-        token = crypto_service.sign_verdict(
-            trace_id="t_session",
-            verdict_status="forwarded",
-            engine="passthrough",
-            sender_id="a",
-            receiver_id="b",
-            payload_hash="sha256:x",
-            session_id="sess-abc-123",
-        )
-        is_valid, claims, _ = verifier.verify_attestation(token)
+        token = _sign(crypto_service, trace_id="t_session", session_id="sess-abc-123")
+        is_valid, claims, _ = verifier.verify_attestation(token, _default_context(session_id="sess-abc-123"))
         assert is_valid is True
         assert claims["qwed_a2a"]["session_id"] == "sess-abc-123"
 
@@ -247,7 +257,7 @@ class TestTamperDetection:
         parts[2] = "".join(sig)
         tampered = ".".join(parts)
 
-        is_valid, claims, error = verifier.verify_attestation(tampered)
+        is_valid, claims, error = verifier.verify_attestation(tampered, _default_context())
         assert is_valid is False
         assert claims is None
         assert error is not None
@@ -269,7 +279,7 @@ class TestCrossServiceVerification:
 
         token = _sign(service_a, trace_id="cross_test")
 
-        is_valid, _, error = service_b.verify_attestation(token)
+        is_valid, _, error = service_b.verify_attestation(token, _default_context())
         assert is_valid is False
 
 
@@ -307,10 +317,10 @@ class TestReplayPrevention:
         """Presenting the same JWT twice to the same verifier must fail second time."""
         token = _sign(crypto_service, trace_id="t_replay_001")
 
-        is_valid_1, _, error_1 = verifier.verify_attestation(token)
+        is_valid_1, _, error_1 = verifier.verify_attestation(token, _default_context())
         assert is_valid_1 is True, f"First verification failed: {error_1}"
 
-        is_valid_2, claims_2, error_2 = verifier.verify_attestation(token)
+        is_valid_2, claims_2, error_2 = verifier.verify_attestation(token, _default_context())
         assert is_valid_2 is False
         assert claims_2 is None
         assert "Replay" in error_2
@@ -318,8 +328,8 @@ class TestReplayPrevention:
     def test_replay_error_message_is_descriptive(self, crypto_service, verifier):
         """Error message must clearly identify the rejection reason."""
         token = _sign(crypto_service, trace_id="t_replay_msg")
-        verifier.verify_attestation(token)  # consume
-        _, _, error = verifier.verify_attestation(token)
+        verifier.verify_attestation(token, _default_context())  # consume
+        _, _, error = verifier.verify_attestation(token, _default_context())
         assert error == "Replay detected: jti already seen"
 
     def test_different_jtis_both_verify_once(self, crypto_service, verifier):
@@ -327,8 +337,8 @@ class TestReplayPrevention:
         token_a = _sign(crypto_service, trace_id="t_replay_a")
         token_b = _sign(crypto_service, trace_id="t_replay_b")
 
-        valid_a, _, _ = verifier.verify_attestation(token_a)
-        valid_b, _, _ = verifier.verify_attestation(token_b)
+        valid_a, _, _ = verifier.verify_attestation(token_a, _default_context())
+        valid_b, _, _ = verifier.verify_attestation(token_b, _default_context())
         assert valid_a is True
         assert valid_b is True
 
@@ -341,7 +351,7 @@ class TestReplayPrevention:
         """Issuer also rejects a token it already signed if asked to re-verify it."""
         token = _sign(crypto_service, trace_id="t_self_replay")
         # Issuer has already registered this jti at sign time
-        is_valid, _, error = crypto_service.verify_attestation(token)
+        is_valid, _, error = crypto_service.verify_attestation(token, _default_context())
         assert is_valid is False
         assert "Replay" in error
 
@@ -375,7 +385,7 @@ class TestReplayPrevention:
         # it would return "Replay detected" here instead of "expired".
         verifier._jti_registry.check_and_register(raw["jti"])
 
-        is_valid, _, error = verifier.verify_attestation(expired_token)
+        is_valid, _, error = verifier.verify_attestation(expired_token, _default_context())
         assert is_valid is False
         assert error is not None
         # Must be expiry error — proves expiry check runs before replay check.
@@ -396,7 +406,7 @@ class TestReplayPrevention:
         tampered = ".".join(parts)
 
         size_before = len(verifier._jti_registry)
-        verifier.verify_attestation(tampered)
+        verifier.verify_attestation(tampered, _default_context())
         assert len(verifier._jti_registry) == size_before
 
 
@@ -418,7 +428,7 @@ class TestDeploymentContextValidation:
     def test_valid_token_passes_deployment_check(self, crypto_service, verifier):
         """Tokens issued in the same deployment must pass deployment_id check."""
         token = _sign(crypto_service, trace_id="t_deploy_ok")
-        is_valid, claims, error = verifier.verify_attestation(token)
+        is_valid, claims, error = verifier.verify_attestation(token, _default_context())
         assert is_valid is True, f"Unexpected failure: {error}"
 
     def test_cross_deployment_token_rejected(self):
@@ -448,7 +458,7 @@ class TestDeploymentContextValidation:
         )
         verifier._key_pair = issuer._key_pair
 
-        is_valid, claims, error = verifier.verify_attestation(token)
+        is_valid, claims, error = verifier.verify_attestation(token, _default_context())
         assert is_valid is False
         assert claims is None
         assert "Deployment context mismatch" in error
@@ -481,7 +491,7 @@ class TestDeploymentContextValidation:
         )
         verifier._key_pair = key_pair
 
-        is_valid, _, error = verifier.verify_attestation(patched_token)
+        is_valid, _, error = verifier.verify_attestation(patched_token, _default_context())
         # Missing deployment_id fails Pydantic validation before
         # the explicit deployment context check runs.
         assert is_valid is False
@@ -512,7 +522,7 @@ class TestDeploymentContextValidation:
         verifier._key_pair = issuer._key_pair
 
         size_before = len(verifier._jti_registry)
-        verifier.verify_attestation(token)
+        verifier.verify_attestation(token, _default_context())
         # Registry must not have grown — cross-deployment token was rejected
         # before the jti check ran
         assert len(verifier._jti_registry) == size_before
@@ -548,7 +558,7 @@ class TestClaimsValidation:
         )
         verifier._key_pair = key_pair
 
-        is_valid, claims, error = verifier.verify_attestation(bad_token)
+        is_valid, claims, error = verifier.verify_attestation(bad_token, _default_context())
         assert is_valid is False
         assert claims is None
         assert "Invalid qwed_a2a claims" in error
@@ -575,7 +585,7 @@ class TestClaimsValidation:
         )
         verifier._key_pair = key_pair
 
-        is_valid, claims, error = verifier.verify_attestation(bad_token)
+        is_valid, claims, error = verifier.verify_attestation(bad_token, _default_context())
         assert is_valid is False
         assert claims is None
         assert "Invalid qwed_a2a claims" in error
@@ -642,7 +652,7 @@ class TestPersistentSigningKey:
 
         s2 = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
 
-        is_valid, claims, error = s2.verify_attestation(token)
+        is_valid, claims, error = s2.verify_attestation(token, _default_context())
         assert (
             is_valid is True
         ), f"JWT signed before restart is not verifiable after restart: {error}"
@@ -660,7 +670,7 @@ class TestPersistentSigningKey:
 
         token = _sign(s1, trace_id="t_mutual")
 
-        is_valid, claims, error = s2.verify_attestation(token)
+        is_valid, claims, error = s2.verify_attestation(token, _default_context())
         assert is_valid is True, f"Cross-instance verification failed: {error}"
 
     def test_get_public_key_jwk_returns_valid_jwk(self):
