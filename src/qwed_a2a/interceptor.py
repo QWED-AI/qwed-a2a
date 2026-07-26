@@ -166,7 +166,7 @@ class A2AVerificationInterceptor:
         self._record(verdict, message.sender_agent_id, start_time)
         return verdict
 
-    def _route_to_engine(self, message: AgentMessage) -> Dict[str, Any]:
+    def _route_to_engine(self, message: AgentMessage) -> dict[str, Any]:
         """
         Route the message payload to the appropriate verification engine.
 
@@ -203,109 +203,27 @@ class A2AVerificationInterceptor:
             "reason": "No verification engine available for this payload type",
         }
 
-    def _verify_financial(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _verify_financial(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Lightweight deterministic financial verification.
 
         Checks mathematical claims in the payload using Decimal arithmetic.
         All comparisons stay in Decimal to avoid floating-point precision loss.
         """
-        data = payload.get("data", {})
-        if not isinstance(data, dict):
-            return {
-                "verified": False,
-                "status": "unverifiable",
-                "engine": "finance_guard",
-                "reason": (
-                    "FINANCIAL_TRANSACTION payload missing required field: "
-                    "data must be a mapping for verification."
-                ),
-            }
-        claimed_total = data.get("claimed_total")
-        line_items = data.get("line_items", [])
+        err = self._validate_financial_payload(payload)
+        if err is not None:
+            return err
 
-        if not isinstance(line_items, list):
-            return {
-                "verified": False,
-                "status": "unverifiable",
-                "engine": "finance_guard",
-                "reason": (
-                    "FINANCIAL_TRANSACTION payload missing required field: "
-                    "data.line_items must be a list for verification."
-                ),
-            }
-
-        if claimed_total is None:
-            return {
-                "verified": False,
-                "status": "unverifiable",
-                "engine": "finance_guard",
-                "reason": (
-                    "FINANCIAL_TRANSACTION payload missing required field: "
-                    "data.claimed_total must be present for verification."
-                ),
-            }
-
-        if not line_items:
-            return {
-                "verified": False,
-                "status": "unverifiable",
-                "engine": "finance_guard",
-                "reason": (
-                    "FINANCIAL_TRANSACTION payload missing required field: "
-                    "data.line_items must be present for verification."
-                ),
-            }
+        data = payload["data"]
+        claimed_total = data["claimed_total"]
+        line_items = data["line_items"]
 
         # Sum line items with Decimal precision
         computed_total = Decimal("0")
         for item in line_items:
-            if not isinstance(item, dict):
-                return {
-                    "verified": False,
-                    "status": "unverifiable",
-                    "engine": "finance_guard",
-                    "reason": (
-                        "FINANCIAL_TRANSACTION payload contains malformed "
-                        "line item: each line item must be a mapping."
-                    ),
-                }
-            if "amount" not in item or item["amount"] is None:
-                return {
-                    "verified": False,
-                    "status": "unverifiable",
-                    "engine": "finance_guard",
-                    "reason": (
-                        "FINANCIAL_TRANSACTION payload contains incomplete "
-                        "line item: each line item must include a non-null amount."
-                    ),
-                }
-            if "quantity" in item and item["quantity"] is None:
-                return {
-                    "verified": False,
-                    "status": "unverifiable",
-                    "engine": "finance_guard",
-                    "reason": (
-                        "FINANCIAL_TRANSACTION payload contains incomplete "
-                        "line item: quantity must not be null."
-                    ),
-                }
-            amount = item.get("amount", 0)
-            quantity = item.get("quantity", 1)
-            try:
-                dec_amount = Decimal(str(amount))
-                dec_quantity = Decimal(str(quantity))
-            except Exception:
-                return {
-                    "verified": False,
-                    "status": "unverifiable",
-                    "engine": "finance_guard",
-                    "reason": (
-                        "FINANCIAL_TRANSACTION payload contains malformed "
-                        "line item: amount and quantity must be numeric values."
-                    ),
-                }
-            computed_total += dec_amount * dec_quantity
+            computed_total += Decimal(str(item["amount"])) * Decimal(
+                str(item.get("quantity", 1))
+            )
 
         computed_total = computed_total.quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -345,7 +263,88 @@ class A2AVerificationInterceptor:
             "computed_total": float(computed_total),
         }
 
-    def _verify_logic(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _validate_financial_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        Validate structure and types of a FINANCIAL_TRANSACTION payload.
+
+        Returns an UNVERIFIABLE result dict if invalid, or None if the payload
+        passes all structural and type checks.
+        """
+        data = payload.get("data", {})
+        if not isinstance(data, dict):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload missing required field: "
+                "data must be a mapping for verification."
+            )
+        claimed_total = data.get("claimed_total")
+        line_items = data.get("line_items", [])
+
+        if not isinstance(line_items, list):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload missing required field: "
+                "data.line_items must be a list for verification."
+            )
+
+        if claimed_total is None:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload missing required field: "
+                "data.claimed_total must be present for verification."
+            )
+
+        if not line_items:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload missing required field: "
+                "data.line_items must be present for verification."
+            )
+
+        for item in line_items:
+            err = self._validate_line_item(item)
+            if err is not None:
+                return err
+        return None
+
+    def _validate_line_item(self, item: Any) -> dict[str, Any] | None:
+        """
+        Validate a single line item in a FINANCIAL_TRANSACTION payload.
+
+        Returns an UNVERIFIABLE result dict if invalid, or None if the item
+        passes all structural and type checks.
+        """
+        if not isinstance(item, dict):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains malformed "
+                "line item: each line item must be a mapping."
+            )
+        if "amount" not in item or item["amount"] is None:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains incomplete "
+                "line item: each line item must include a non-null amount."
+            )
+        if "quantity" in item and item["quantity"] is None:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains incomplete "
+                "line item: quantity must not be null."
+            )
+        try:
+            Decimal(str(item["amount"]))
+            Decimal(str(item.get("quantity", 1)))
+        except Exception:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains malformed "
+                "line item: amount and quantity must be numeric values."
+            )
+        return None
+
+    def _finance_unverifiable(self, reason: str) -> dict[str, Any]:
+        """Build a finance_guard UNVERIFIABLE result dict."""
+        return {
+            "verified": False,
+            "status": "unverifiable",
+            "engine": "finance_guard",
+            "reason": reason,
+        }
+
+    def _verify_logic(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Lightweight logic assertion verification.
 
@@ -447,7 +446,7 @@ class A2AVerificationInterceptor:
     #   subprocess.run() — dangerous, receiver IS subprocess
     # Limitation: import aliasing (e.g., `import subprocess as sp; sp.run()`)
     # is not caught here — the regex heuristic layer provides partial coverage.
-    _DANGEROUS_RECEIVER_METHODS: Dict[str, frozenset] = {
+    _DANGEROUS_RECEIVER_METHODS: dict[str, frozenset] = {
         "subprocess": frozenset(
             {"run", "Popen", "call", "check_output", "check_call", "popen"}
         ),
@@ -466,7 +465,7 @@ class A2AVerificationInterceptor:
     # ── Regex patterns as secondary heuristic layer ───────────────────────────
     # Catch obfuscation patterns that survive AST parsing: encoded strings,
     # getattr-based lookups, and dynamic attribute construction.
-    _DANGEROUS_PATTERNS: Dict[str, re.Pattern] = {
+    _DANGEROUS_PATTERNS: dict[str, re.Pattern] = {
         "getattr_builtin": re.compile(
             r"""getattr\s*\(\s*(?:__builtins__|builtins)\s*""", re.IGNORECASE
         ),
@@ -481,7 +480,7 @@ class A2AVerificationInterceptor:
         "os_popen": re.compile(r"""\bos\.popen\s*\(""", re.IGNORECASE),
     }
 
-    def _verify_code(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _verify_code(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Heuristic code security scan: AST structural analysis + regex patterns.
 
@@ -601,7 +600,7 @@ class A2AVerificationInterceptor:
         reason: str | None,
         engine: str,
         message: AgentMessage,
-        details: Dict[str, Any] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> VerificationVerdict:
         """Build a VerificationVerdict, signing with JWT unless status is UNVERIFIABLE.
 

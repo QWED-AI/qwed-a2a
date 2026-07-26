@@ -68,8 +68,8 @@ def configure_interceptor(config: InterceptorConfig) -> None:
         _interceptor = new_interceptor
 
 
-@router.post("/intercept", response_model=Dict[str, Any])
-async def intercept_message(message: AgentMessage) -> Dict[str, Any]:
+@router.post("/intercept", response_model=dict[str, Any])
+async def intercept_message(message: AgentMessage) -> dict[str, Any]:
     """
     Primary A2A verification gateway.
 
@@ -92,7 +92,7 @@ async def intercept_message(message: AgentMessage) -> Dict[str, Any]:
 
 
 @router.get("/health")
-async def health_check() -> Dict[str, str]:
+async def health_check() -> dict[str, str]:
     """Service health check."""
     return {
         "status": "healthy",
@@ -102,7 +102,7 @@ async def health_check() -> Dict[str, str]:
 
 
 @router.get("/metrics")
-async def metrics() -> Dict[str, Any]:
+async def metrics() -> dict[str, Any]:
     """Return aggregated intercept metrics."""
     return get_metrics().to_dict()
 
@@ -138,7 +138,7 @@ wellknown_router = APIRouter(tags=["JWKS"])
         },
     },
 )
-async def jwks_endpoint() -> Dict[str, Any]:
+async def jwks_endpoint() -> dict[str, Any]:
     """Public key set for JWT verification by external consumers."""
     try:
         interceptor = get_interceptor()

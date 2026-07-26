@@ -336,7 +336,7 @@ class A2ACryptoService:
 
     def verify_attestation(
         self, token: str
-    ) -> Tuple[bool, Dict[str, Any] | None, str | None]:
+    ) -> tuple[bool, dict[str, Any] | None, str | None]:
         """
         Verify a JWT attestation token.
 

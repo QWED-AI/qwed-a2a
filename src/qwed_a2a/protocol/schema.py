@@ -54,7 +54,7 @@ class AgentMessage(BaseModel):
     payload_type: PayloadType = Field(
         default=PayloadType.GENERAL, description="Classification of the payload content"
     )
-    payload: Dict[str, Any] = Field(
+    payload: dict[str, Any] = Field(
         ..., description="The actual data payload to be verified"
     )
     timestamp: datetime = Field(
@@ -65,7 +65,7 @@ class AgentMessage(BaseModel):
         default=None,
         description="Optional JWT signature from the sender for tamper detection",
     )
-    metadata: Dict[str, Any] | None = Field(
+    metadata: dict[str, Any] | None = Field(
         default=None,
         description="Optional metadata (correlation IDs, trace context, etc.)",
     )
@@ -104,7 +104,7 @@ class VerificationVerdict(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="Timestamp of the verification",
     )
-    details: Dict[str, Any] | None = Field(
+    details: dict[str, Any] | None = Field(
         default=None, description="Raw verification engine output"
     )
 
@@ -133,6 +133,6 @@ class InterceptorConfig(BaseModel):
         le=10_485_760,
         description="Maximum payload size (1MB default)",
     )
-    trusted_agents: List[str] | None = Field(
+    trusted_agents: list[str] | None = Field(
         default=None, description="Allowlist of agent IDs that bypass verification"
     )

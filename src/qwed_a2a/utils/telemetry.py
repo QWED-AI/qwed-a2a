@@ -39,8 +39,8 @@ class InterceptMetrics:
     total_heuristic_pass: int = 0
     total_errors: int = 0
     total_latency_ms: float = 0.0
-    by_engine: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    by_sender: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    by_engine: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    by_sender: dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
     @property
     def average_latency_ms(self) -> float:
@@ -54,7 +54,7 @@ class InterceptMetrics:
             return 0.0
         return self.total_blocked / self.total_intercepts
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "total_intercepts": self.total_intercepts,
             "total_forwarded": self.total_forwarded,

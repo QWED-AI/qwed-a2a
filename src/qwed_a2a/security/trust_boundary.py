@@ -56,8 +56,8 @@ class TrustEntry:
     """Scoped, expiring trust grant for a single agent."""
 
     agent_id: str
-    allowed_receivers: Set[str] | None = None
-    allowed_payload_types: Set[str] | None = None
+    allowed_receivers: set[str] | None = None
+    allowed_payload_types: set[str] | None = None
     valid_until: float | None = None
     granted_by: str = "config"
     granted_at: float = field(default_factory=time.time)
@@ -107,14 +107,14 @@ class TrustBoundary:
         self.default_allow = default_allow
 
         # Agent-level controls
-        self._blocked_agents: Set[str] = set()
-        self._trusted_agents: Dict[str, TrustEntry] = {}
+        self._blocked_agents: set[str] = set()
+        self._trusted_agents: dict[str, TrustEntry] = {}
 
         # Pair-level controls
-        self._blocked_pairs: Set[Tuple[str, str]] = set()
+        self._blocked_pairs: set[tuple[str, str]] = set()
 
         # Token-bucket rate limiting per agent pair
-        self._rate_limits: Dict[Tuple[str, str], TokenBucket] = {}
+        self._rate_limits: dict[tuple[str, str], TokenBucket] = {}
 
         # Eviction threshold: remove idle buckets after this many seconds
         self._eviction_ttl: float = 300.0  # 5 minutes
@@ -130,8 +130,8 @@ class TrustBoundary:
     def trust_agent(
         self,
         agent_id: str,
-        allowed_receivers: Set[str] | None = None,
-        allowed_payload_types: Set[str] | None = None,
+        allowed_receivers: set[str] | None = None,
+        allowed_payload_types: set[str] | None = None,
         valid_until: float | None = None,
         granted_by: str = "config",
     ) -> None:
@@ -271,7 +271,7 @@ class TrustBoundary:
         payload_type: str | None,
         now: float,
         enforce_allowlist: bool = True,
-    ) -> Tuple[bool, str] | None:
+    ) -> tuple[bool, str] | None:
         """Check trust entries for sender/receiver. Returns rejection tuple or None.
 
         QWED deterministic philosophy: expired = non-existent.
@@ -326,7 +326,7 @@ class TrustBoundary:
 
     def evaluate(
         self, sender_id: str, receiver_id: str, payload_type: str | None = None
-    ) -> Tuple[bool, str | None]:
+    ) -> tuple[bool, str | None]:
         """Evaluate whether a sender->receiver communication is allowed.
 
         Trust is directional: the sender must be explicitly trusted when
