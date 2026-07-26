@@ -62,9 +62,7 @@ class TrustEntry:
     granted_at: float = field(default_factory=time.time)
 
     def is_valid(self, now: float) -> bool:
-        if self.valid_until is not None and now > self.valid_until:
-            return False
-        return True
+        return self.valid_until is None or now <= self.valid_until
 
     def allows(self, receiver: str, payload_type: str, now: float) -> bool:
         if not self.is_valid(now):
@@ -74,12 +72,10 @@ class TrustEntry:
             and receiver not in self.allowed_receivers
         ):
             return False
-        if (
-            self.allowed_payload_types is not None
-            and payload_type not in self.allowed_payload_types
-        ):
-            return False
-        return True
+        return (
+            self.allowed_payload_types is None
+            or payload_type in self.allowed_payload_types
+        )
 
 
 class TrustBoundary:
@@ -179,9 +175,7 @@ class TrustBoundary:
         entry = self._trusted_agents.get(agent_id)
         if entry is None:
             return False
-        if not entry.is_valid(now):
-            return False
-        return True
+        return entry.is_valid(now)
 
     def _evict_expired_trust(self, now: float) -> None:
         """Remove expired trust entries to prevent memory leaks."""
@@ -225,13 +219,11 @@ class TrustBoundary:
             and receiver_id not in entry.allowed_receivers
         ):
             return True
-        if (
+        return (
             payload_type is not None
             and entry.allowed_payload_types is not None
             and payload_type not in entry.allowed_payload_types
-        ):
-            return True
-        return False
+        )
 
     @staticmethod
     def _receiver_scope_blocks(entry, sender_id, payload_type):
@@ -248,13 +240,11 @@ class TrustBoundary:
             and sender_id not in entry.allowed_receivers
         ):
             return True
-        if (
+        return (
             payload_type is not None
             and entry.allowed_payload_types is not None
             and payload_type not in entry.allowed_payload_types
-        ):
-            return True
-        return False
+        )
 
     @staticmethod
     def _nullify_if_expired(entry, now):

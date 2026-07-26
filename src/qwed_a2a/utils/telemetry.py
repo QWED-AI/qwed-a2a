@@ -9,8 +9,9 @@ import functools
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 # Imported here (not at top) to avoid circular imports —
 # schema is a leaf module with no telemetry dependency.

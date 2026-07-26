@@ -11,8 +11,8 @@ import ast
 import json
 import re
 import time
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any, ClassVar
 
 from qwed_a2a.protocol.schema import (
     AgentMessage,
@@ -21,7 +21,7 @@ from qwed_a2a.protocol.schema import (
     VerdictStatus,
     VerificationVerdict,
 )
-from qwed_a2a.security.crypto import A2ACryptoService, HAS_CRYPTO
+from qwed_a2a.security.crypto import HAS_CRYPTO, A2ACryptoService
 from qwed_a2a.security.trust_boundary import TrustBoundary
 from qwed_a2a.utils.telemetry import logger, record_intercept, trace_intercept
 
@@ -104,7 +104,7 @@ class A2AVerificationInterceptor:
         # --- Step 2: Route to verification engine ---
         try:
             engine_result = self._route_to_engine(message)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # fail-closed: catch all engine errors
             logger.error("Verification engine error: %s", exc)
             status = (
                 VerdictStatus.BLOCKED
@@ -219,7 +219,7 @@ class A2AVerificationInterceptor:
         line_items = data["line_items"]
 
         # Sum line items with Decimal precision
-        computed_total = Decimal("0")
+        computed_total = Decimal(0)
         for item in line_items:
             computed_total += Decimal(str(item["amount"])) * Decimal(
                 str(item.get("quantity", 1))
@@ -232,7 +232,7 @@ class A2AVerificationInterceptor:
             claimed_decimal = Decimal(str(claimed_total)).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             return {
                 "verified": False,
                 "status": "unverifiable",
@@ -295,7 +295,7 @@ class A2AVerificationInterceptor:
 
         try:
             dec_claimed = Decimal(str(claimed_total))
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             return self._finance_unverifiable(
                 "FINANCIAL_TRANSACTION payload contains malformed field: "
                 "data.claimed_total must be a numeric value."
@@ -343,7 +343,7 @@ class A2AVerificationInterceptor:
         try:
             dec_amount = Decimal(str(item["amount"]))
             dec_quantity = Decimal(str(item.get("quantity", 1)))
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             return self._finance_unverifiable(
                 "FINANCIAL_TRANSACTION payload contains malformed "
                 "line item: amount and quantity must be numeric values."
@@ -409,17 +409,17 @@ class A2AVerificationInterceptor:
                         "assertion entry: each assertion must be a mapping."
                     ),
                 }
-            if "claim" not in assertion or not assertion["claim"]:
+            claim = assertion.get("claim")
+            if not isinstance(claim, str) or not claim:
                 return {
                     "verified": False,
                     "status": "unverifiable",
                     "engine": "logic_guard",
                     "reason": (
                         "LOGIC_ASSERTION payload contains incomplete "
-                        "assertion entry: each assertion must include a non-empty claim."
+                        "assertion entry: each assertion must include a non-empty string claim."
                     ),
                 }
-            claim = assertion.get("claim", "")
             negated = assertion.get("negated", False)
 
             if negated:
@@ -466,7 +466,7 @@ class A2AVerificationInterceptor:
     #   subprocess.run() — dangerous, receiver IS subprocess
     # Limitation: import aliasing (e.g., `import subprocess as sp; sp.run()`)
     # is not caught here — the regex heuristic layer provides partial coverage.
-    _DANGEROUS_RECEIVER_METHODS: dict[str, frozenset] = {
+    _DANGEROUS_RECEIVER_METHODS: ClassVar[dict[str, frozenset]] = {
         "subprocess": frozenset(
             {"run", "Popen", "call", "check_output", "check_call", "popen"}
         ),
@@ -485,7 +485,7 @@ class A2AVerificationInterceptor:
     # ── Regex patterns as secondary heuristic layer ───────────────────────────
     # Catch obfuscation patterns that survive AST parsing: encoded strings,
     # getattr-based lookups, and dynamic attribute construction.
-    _DANGEROUS_PATTERNS: dict[str, re.Pattern] = {
+    _DANGEROUS_PATTERNS: ClassVar[dict[str, re.Pattern]] = {
         "getattr_builtin": re.compile(
             r"""getattr\s*\(\s*(?:__builtins__|builtins)\s*""", re.IGNORECASE
         ),
@@ -587,11 +587,10 @@ class A2AVerificationInterceptor:
                 threats.extend(self._scan_ast_call(node))
             elif isinstance(node, ast.Import):
                 threats.extend(self._scan_ast_import(node))
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    root = node.module.split(".")[0]
-                    if root in self._DANGEROUS_IMPORTS:
-                        threats.append(f"import:{root}")
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                root = node.module.split(".")[0]
+                if root in self._DANGEROUS_IMPORTS:
+                    threats.append(f"import:{root}")
         return threats
 
     def _scan_ast_call(self, node: ast.Call) -> list[str]:

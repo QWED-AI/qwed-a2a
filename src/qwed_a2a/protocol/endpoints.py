@@ -84,7 +84,7 @@ async def intercept_message(message: AgentMessage) -> dict[str, Any]:
     except RuntimeError as exc:
         logger.error("Interceptor runtime error: %s", exc)
         raise HTTPException(status_code=503, detail="Signing key unavailable")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # generic 500 catch-all
         logger.error("Interceptor internal error: %s", exc)
         raise HTTPException(status_code=500, detail="Internal interceptor error")
 

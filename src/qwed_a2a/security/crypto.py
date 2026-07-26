@@ -110,7 +110,7 @@ class JtiRegistry:
     def _evict(self, now: float) -> None:
         """Remove entries older than TTL. Runs in O(k) where k = expired entries."""
         while self._seen:
-            oldest_jti, timestamp = next(iter(self._seen.items()))
+            _, timestamp = next(iter(self._seen.items()))
             if now - timestamp > self._ttl:
                 self._seen.popitem(last=False)
             else:
@@ -210,12 +210,12 @@ class A2ACryptoService:
                 ) from exc
 
             if not isinstance(private_key, ec.EllipticCurvePrivateKey):
-                raise RuntimeError(
+                raise RuntimeError(  # noqa: TRY004  # deployment config error, not user-data type error
                     "QWED_A2A_SIGNING_KEY_PEM must be an EC P-256 (prime256v1) private key. "
                     f"Got {type(private_key).__name__}."
                 )
             if not isinstance(private_key.curve, ec.SECP256R1):
-                raise RuntimeError(
+                raise RuntimeError(  # noqa: TRY004  # deployment config error, not user-data type error
                     "QWED_A2A_SIGNING_KEY_PEM must use curve SECP256R1 (prime256v1, P-256). "
                     f"Got curve {private_key.curve.name}."
                 )
