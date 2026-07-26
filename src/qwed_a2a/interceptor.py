@@ -211,8 +211,29 @@ class A2AVerificationInterceptor:
         All comparisons stay in Decimal to avoid floating-point precision loss.
         """
         data = payload.get("data", {})
+        if not isinstance(data, dict):
+            return {
+                "verified": False,
+                "status": "unverifiable",
+                "engine": "finance_guard",
+                "reason": (
+                    "FINANCIAL_TRANSACTION payload missing required field: "
+                    "data must be a mapping for verification."
+                ),
+            }
         claimed_total = data.get("claimed_total")
         line_items = data.get("line_items", [])
+
+        if not isinstance(line_items, list):
+            return {
+                "verified": False,
+                "status": "unverifiable",
+                "engine": "finance_guard",
+                "reason": (
+                    "FINANCIAL_TRANSACTION payload missing required field: "
+                    "data.line_items must be a list for verification."
+                ),
+            }
 
         if claimed_total is None or not line_items:
             return {
@@ -228,6 +249,16 @@ class A2AVerificationInterceptor:
         # Sum line items with Decimal precision
         computed_total = Decimal("0")
         for item in line_items:
+            if not isinstance(item, dict):
+                return {
+                    "verified": False,
+                    "status": "unverifiable",
+                    "engine": "finance_guard",
+                    "reason": (
+                        "FINANCIAL_TRANSACTION payload contains malformed "
+                        "line item: each line item must be a mapping."
+                    ),
+                }
             amount = item.get("amount", 0)
             quantity = item.get("quantity", 1)
             computed_total += Decimal(str(amount)) * Decimal(str(quantity))
@@ -267,6 +298,17 @@ class A2AVerificationInterceptor:
         """
         assertions = payload.get("assertions", [])
 
+        if not isinstance(assertions, list):
+            return {
+                "verified": False,
+                "status": "unverifiable",
+                "engine": "logic_guard",
+                "reason": (
+                    "LOGIC_ASSERTION payload missing required field: "
+                    "assertions must be a list for verification."
+                ),
+            }
+
         if not assertions:
             return {
                 "verified": False,
@@ -283,6 +325,16 @@ class A2AVerificationInterceptor:
         negative_claims = set()
 
         for assertion in assertions:
+            if not isinstance(assertion, dict):
+                return {
+                    "verified": False,
+                    "status": "unverifiable",
+                    "engine": "logic_guard",
+                    "reason": (
+                        "LOGIC_ASSERTION payload contains malformed "
+                        "assertion entry: each assertion must be a mapping."
+                    ),
+                }
             claim = assertion.get("claim", "")
             negated = assertion.get("negated", False)
 

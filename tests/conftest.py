@@ -173,6 +173,96 @@ def empty_logic_message():
 
 
 @pytest.fixture
+def financial_missing_claimed_total_message():
+    """Financial payload with line_items but no claimed_total."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "line_items": [{"description": "Widget", "amount": Decimal("50.00"), "quantity": 1}],
+            }
+        },
+    )
+
+
+@pytest.fixture
+def financial_empty_line_items_message():
+    """Financial payload with claimed_total but empty line_items."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {"claimed_total": Decimal("50.00"), "line_items": []},
+        },
+    )
+
+
+@pytest.fixture
+def financial_malformed_data_message():
+    """Financial payload where data is None instead of a mapping."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={"data": None},
+    )
+
+
+@pytest.fixture
+def financial_malformed_line_items_message():
+    """Financial payload where line_items is a string instead of a list."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {"claimed_total": Decimal("50.00"), "line_items": "not-a-list"},
+        },
+    )
+
+
+@pytest.fixture
+def financial_non_dict_line_item_message():
+    """Financial payload with a line item that is not a mapping."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("50.00"),
+                "line_items": ["not-a-mapping"],
+            },
+        },
+    )
+
+
+@pytest.fixture
+def logic_malformed_assertions_message():
+    """Logic assertion where assertions is a string instead of a list."""
+    return AgentMessage(
+        sender_agent_id="reasoning-agent-006",
+        receiver_agent_id="planner-agent-007",
+        payload_type=PayloadType.LOGIC_ASSERTION,
+        payload={"assertions": "not-a-list"},
+    )
+
+
+@pytest.fixture
+def logic_non_dict_assertion_message():
+    """Logic assertion containing a non-mapping entry."""
+    return AgentMessage(
+        sender_agent_id="reasoning-agent-006",
+        receiver_agent_id="planner-agent-007",
+        payload_type=PayloadType.LOGIC_ASSERTION,
+        payload={"assertions": ["not-a-mapping"]},
+    )
+
+
+@pytest.fixture
 def contradictory_logic_message():
     """A logic assertion message with contradictions."""
     return AgentMessage(
