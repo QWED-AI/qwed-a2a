@@ -416,16 +416,20 @@ class A2ACryptoService:
             return (
                 False,
                 None,
-                f"Attestation sender mismatch: "
-                f"expected={context.sender_agent_id}, got={qwed_claims.sender}",
+                (
+                    f"Attestation sender mismatch: "
+                    f"expected={context.sender_agent_id}, got={qwed_claims.sender}"
+                ),
             )
 
         if qwed_claims.receiver != context.receiver_agent_id:
             return (
                 False,
                 None,
-                f"Attestation receiver mismatch: "
-                f"expected={context.receiver_agent_id}, got={qwed_claims.receiver}",
+                (
+                    f"Attestation receiver mismatch: "
+                    f"expected={context.receiver_agent_id}, got={qwed_claims.receiver}"
+                ),
             )
 
         expected_hash = self.payload_hash(context.payload)
@@ -443,8 +447,10 @@ class A2ACryptoService:
             return (
                 False,
                 None,
-                f"Attestation session mismatch: "
-                f"expected={context.session_id}, got={qwed_claims.session_id}",
+                (
+                    f"Attestation session mismatch: "
+                    f"expected={context.session_id}, got={qwed_claims.session_id}"
+                ),
             )
 
         # Step 7: replay check — runs after context binding so we don't
