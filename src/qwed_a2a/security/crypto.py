@@ -281,6 +281,17 @@ class A2ACryptoService:
         """Create a deterministic SHA-256 hash of content."""
         return f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
 
+    @staticmethod
+    def payload_hash(payload: Any) -> str:
+        """Canonical JSON serialization + SHA-256 hash of a payload dict.
+
+        Uses the same ``json.dumps(..., sort_keys=True, default=str)``
+        expression everywhere so signing and verification always agree.
+        """
+        return A2ACryptoService.hash_content(
+            json.dumps(payload, sort_keys=True, default=str)
+        )
+
     def sign_verdict(
         self,
         trace_id: str,
@@ -417,9 +428,7 @@ class A2ACryptoService:
                 f"expected={context.receiver_agent_id}, got={qwed_claims.receiver}",
             )
 
-        expected_hash = self.hash_content(
-            json.dumps(context.payload, sort_keys=True, default=str)
-        )
+        expected_hash = self.payload_hash(context.payload)
         if raw_claims.get("sub") != expected_hash:
             return (
                 False,
@@ -427,7 +436,10 @@ class A2ACryptoService:
                 "Attestation payload hash mismatch — detached attestation rejected",
             )
 
-        if context.session_id is not None and qwed_claims.session_id != context.session_id:
+        if (
+            context.session_id is not None
+            and qwed_claims.session_id != context.session_id
+        ):
             return (
                 False,
                 None,

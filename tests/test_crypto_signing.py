@@ -216,7 +216,9 @@ class TestJWTRoundTrip:
     def test_session_id_propagated_into_claims(self, crypto_service, verifier):
         """Caller-supplied session_id must appear in JWT claims."""
         token = _sign(crypto_service, trace_id="t_session", session_id="sess-abc-123")
-        is_valid, claims, _ = verifier.verify_attestation(token, _default_context(session_id="sess-abc-123"))
+        is_valid, claims, _ = verifier.verify_attestation(
+            token, _default_context(session_id="sess-abc-123")
+        )
         assert is_valid is True
         assert claims["qwed_a2a"]["session_id"] == "sess-abc-123"
 
@@ -257,7 +259,9 @@ class TestTamperDetection:
         parts[2] = "".join(sig)
         tampered = ".".join(parts)
 
-        is_valid, claims, error = verifier.verify_attestation(tampered, _default_context())
+        is_valid, claims, error = verifier.verify_attestation(
+            tampered, _default_context()
+        )
         assert is_valid is False
         assert claims is None
         assert error is not None
@@ -320,7 +324,9 @@ class TestReplayPrevention:
         is_valid_1, _, error_1 = verifier.verify_attestation(token, _default_context())
         assert is_valid_1 is True, f"First verification failed: {error_1}"
 
-        is_valid_2, claims_2, error_2 = verifier.verify_attestation(token, _default_context())
+        is_valid_2, claims_2, error_2 = verifier.verify_attestation(
+            token, _default_context()
+        )
         assert is_valid_2 is False
         assert claims_2 is None
         assert "Replay" in error_2
@@ -351,7 +357,9 @@ class TestReplayPrevention:
         """Issuer also rejects a token it already signed if asked to re-verify it."""
         token = _sign(crypto_service, trace_id="t_self_replay")
         # Issuer has already registered this jti at sign time
-        is_valid, _, error = crypto_service.verify_attestation(token, _default_context())
+        is_valid, _, error = crypto_service.verify_attestation(
+            token, _default_context()
+        )
         assert is_valid is False
         assert "Replay" in error
 
@@ -385,7 +393,9 @@ class TestReplayPrevention:
         # it would return "Replay detected" here instead of "expired".
         verifier._jti_registry.check_and_register(raw["jti"])
 
-        is_valid, _, error = verifier.verify_attestation(expired_token, _default_context())
+        is_valid, _, error = verifier.verify_attestation(
+            expired_token, _default_context()
+        )
         assert is_valid is False
         assert error is not None
         # Must be expiry error — proves expiry check runs before replay check.
@@ -491,7 +501,9 @@ class TestDeploymentContextValidation:
         )
         verifier._key_pair = key_pair
 
-        is_valid, _, error = verifier.verify_attestation(patched_token, _default_context())
+        is_valid, _, error = verifier.verify_attestation(
+            patched_token, _default_context()
+        )
         # Missing deployment_id fails Pydantic validation before
         # the explicit deployment context check runs.
         assert is_valid is False
@@ -558,7 +570,9 @@ class TestClaimsValidation:
         )
         verifier._key_pair = key_pair
 
-        is_valid, claims, error = verifier.verify_attestation(bad_token, _default_context())
+        is_valid, claims, error = verifier.verify_attestation(
+            bad_token, _default_context()
+        )
         assert is_valid is False
         assert claims is None
         assert "Invalid qwed_a2a claims" in error
@@ -585,7 +599,9 @@ class TestClaimsValidation:
         )
         verifier._key_pair = key_pair
 
-        is_valid, claims, error = verifier.verify_attestation(bad_token, _default_context())
+        is_valid, claims, error = verifier.verify_attestation(
+            bad_token, _default_context()
+        )
         assert is_valid is False
         assert claims is None
         assert "Invalid qwed_a2a claims" in error
