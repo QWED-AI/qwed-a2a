@@ -7,7 +7,7 @@ FastAPI router exposing the A2A verification gateway via HTTP.
 import os
 import threading
 import uuid
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -86,9 +86,7 @@ async def intercept_message(message: AgentMessage) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Signing key unavailable")
     except Exception as exc:
         logger.error("Interceptor internal error: %s", exc)
-        raise HTTPException(
-            status_code=500, detail=f"Internal interceptor error: {exc}"
-        )
+        raise HTTPException(status_code=500, detail="Internal interceptor error")
 
 
 @router.get("/health")

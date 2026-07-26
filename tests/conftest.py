@@ -2,6 +2,10 @@
 Shared test fixtures for qwed-a2a test suite.
 """
 
+# ruff: noqa: E402
+# Environment variables MUST be set before importing qwed_a2a modules
+# (crypto.py reads QWED_A2A_DEPLOYMENT_ID and QWED_A2A_SIGNING_KEY_PEM at module level).
+
 import os
 
 # Set deployment ID before any qwed_a2a modules are imported.
@@ -157,7 +161,12 @@ def empty_financial_message():
         sender_agent_id="procurement-agent-001",
         receiver_agent_id="treasury-agent-002",
         payload_type=PayloadType.FINANCIAL_TRANSACTION,
-        payload={"data": {}, "action": "transfer", "amount": 1000000, "destination": "attacker-account"},
+        payload={
+            "data": {},
+            "action": "transfer",
+            "amount": 1000000,
+            "destination": "attacker-account",
+        },
     )
 
 
@@ -181,7 +190,9 @@ def financial_missing_claimed_total_message():
         payload_type=PayloadType.FINANCIAL_TRANSACTION,
         payload={
             "data": {
-                "line_items": [{"description": "Widget", "amount": Decimal("50.00"), "quantity": 1}],
+                "line_items": [
+                    {"description": "Widget", "amount": Decimal("50.00"), "quantity": 1}
+                ],
             }
         },
     )
@@ -315,7 +326,13 @@ def financial_null_quantity_line_item_message():
         payload={
             "data": {
                 "claimed_total": Decimal("100.00"),
-                "line_items": [{"description": "Item", "amount": Decimal("50.00"), "quantity": None}],
+                "line_items": [
+                    {
+                        "description": "Item",
+                        "amount": Decimal("50.00"),
+                        "quantity": None,
+                    }
+                ],
             },
         },
     )
@@ -331,7 +348,9 @@ def financial_non_numeric_claimed_total_message():
         payload={
             "data": {
                 "claimed_total": "N/A",
-                "line_items": [{"description": "Item", "amount": Decimal("50.00"), "quantity": 1}],
+                "line_items": [
+                    {"description": "Item", "amount": Decimal("50.00"), "quantity": 1}
+                ],
             },
         },
     )
@@ -347,7 +366,9 @@ def financial_non_numeric_amount_message():
         payload={
             "data": {
                 "claimed_total": Decimal("50.00"),
-                "line_items": [{"description": "Item", "amount": "free", "quantity": 1}],
+                "line_items": [
+                    {"description": "Item", "amount": "free", "quantity": 1}
+                ],
             },
         },
     )

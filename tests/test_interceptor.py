@@ -68,6 +68,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "claimed_total" in verdict.reason
 
     async def test_empty_line_items_returns_unverifiable(
         self, interceptor, financial_empty_line_items_message
@@ -79,6 +81,8 @@ class TestInterceptorFinancial:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "line_items" in verdict.reason
 
     async def test_malformed_data_returns_unverifiable(
         self, interceptor, financial_malformed_data_message
@@ -249,6 +253,8 @@ class TestInterceptorLogic:
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "logic_guard"
         assert verdict.attestation_jwt is None
+        assert verdict.reason is not None
+        assert "claim" in verdict.reason
 
 
 @pytest.mark.asyncio

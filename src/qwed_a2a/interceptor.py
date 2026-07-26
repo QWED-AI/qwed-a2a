@@ -12,7 +12,7 @@ import json
 import re
 import time
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Dict, Optional
+from typing import Any
 
 from qwed_a2a.protocol.schema import (
     AgentMessage,
@@ -263,7 +263,9 @@ class A2AVerificationInterceptor:
             "computed_total": float(computed_total),
         }
 
-    def _validate_financial_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def _validate_financial_payload(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """
         Validate structure and types of a FINANCIAL_TRANSACTION payload.
 
@@ -289,6 +291,19 @@ class A2AVerificationInterceptor:
             return self._finance_unverifiable(
                 "FINANCIAL_TRANSACTION payload missing required field: "
                 "data.claimed_total must be present for verification."
+            )
+
+        try:
+            dec_claimed = Decimal(str(claimed_total))
+        except Exception:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains malformed field: "
+                "data.claimed_total must be a numeric value."
+            )
+        if not dec_claimed.is_finite():
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains non-finite field: "
+                "data.claimed_total must be a finite numeric value."
             )
 
         if not line_items:
@@ -326,12 +341,17 @@ class A2AVerificationInterceptor:
                 "line item: quantity must not be null."
             )
         try:
-            Decimal(str(item["amount"]))
-            Decimal(str(item.get("quantity", 1)))
+            dec_amount = Decimal(str(item["amount"]))
+            dec_quantity = Decimal(str(item.get("quantity", 1)))
         except Exception:
             return self._finance_unverifiable(
                 "FINANCIAL_TRANSACTION payload contains malformed "
                 "line item: amount and quantity must be numeric values."
+            )
+        if not (dec_amount.is_finite() and dec_quantity.is_finite()):
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains non-finite "
+                "line item: amount and quantity must be finite numeric values."
             )
         return None
 
@@ -389,14 +409,14 @@ class A2AVerificationInterceptor:
                         "assertion entry: each assertion must be a mapping."
                     ),
                 }
-            if "claim" not in assertion:
+            if "claim" not in assertion or not assertion["claim"]:
                 return {
                     "verified": False,
                     "status": "unverifiable",
                     "engine": "logic_guard",
                     "reason": (
                         "LOGIC_ASSERTION payload contains incomplete "
-                        "assertion entry: each assertion must include a claim."
+                        "assertion entry: each assertion must include a non-empty claim."
                     ),
                 }
             claim = assertion.get("claim", "")
@@ -519,37 +539,7 @@ class A2AVerificationInterceptor:
                 "reason": f"Code failed AST parsing — cannot verify: {exc}",
             }
 
-        ast_threats: list = []
-        for node in ast.walk(tree):
-            # Direct dangerous function calls: eval(...), exec(...), compile(...)
-            if isinstance(node, ast.Call):
-                func = node.func
-                if isinstance(func, ast.Name) and func.id in self._DANGEROUS_CALL_NAMES:
-                    ast_threats.append(f"call:{func.id}()")
-                # Receiver-scoped attribute calls: subprocess.run(...), os.system(...)
-                # Only blocked when called on a known dangerous receiver — this avoids
-                # false positives from legitimate .run()/.call() on other objects.
-                elif isinstance(func, ast.Attribute):
-                    if isinstance(func.value, ast.Name):
-                        receiver = func.value.id
-                        dangerous_methods = self._DANGEROUS_RECEIVER_METHODS.get(
-                            receiver, frozenset()
-                        )
-                        if func.attr in dangerous_methods:
-                            ast_threats.append(f"call:{receiver}.{func.attr}()")
-
-            # Dangerous imports: import subprocess, from ctypes import ...
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    root = alias.name.split(".")[0]
-                    if root in self._DANGEROUS_IMPORTS:
-                        ast_threats.append(f"import:{root}")
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    root = node.module.split(".")[0]
-                    if root in self._DANGEROUS_IMPORTS:
-                        ast_threats.append(f"import:{root}")
-
+        ast_threats = self._scan_ast_threats(tree)
         if ast_threats:
             return {
                 "verified": False,
@@ -563,11 +553,7 @@ class A2AVerificationInterceptor:
             }
 
         # ── Layer 2: Regex heuristic scan ─────────────────────────────────────
-        regex_threats: list = []
-        for label, pattern in self._DANGEROUS_PATTERNS.items():
-            if pattern.search(code):
-                regex_threats.append(label)
-
+        regex_threats = self._scan_regex_threats(code)
         if regex_threats:
             return {
                 "verified": False,
@@ -592,6 +578,55 @@ class A2AVerificationInterceptor:
             ),
             "analysis": "ast+regex",
         }
+
+    def _scan_ast_threats(self, tree: ast.AST) -> list[str]:
+        """Collect threats from an AST tree: dangerous calls and imports."""
+        threats: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                threats.extend(self._scan_ast_call(node))
+            elif isinstance(node, ast.Import):
+                threats.extend(self._scan_ast_import(node))
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    root = node.module.split(".")[0]
+                    if root in self._DANGEROUS_IMPORTS:
+                        threats.append(f"import:{root}")
+        return threats
+
+    def _scan_ast_call(self, node: ast.Call) -> list[str]:
+        """Detect dangerous function calls in a single AST Call node."""
+        func = node.func
+        # Direct dangerous calls: eval(...), exec(...), compile(...)
+        if isinstance(func, ast.Name) and func.id in self._DANGEROUS_CALL_NAMES:
+            return [f"call:{func.id}()"]
+        # Receiver-scoped attribute calls: subprocess.run(...), os.system(...)
+        # Only blocked when called on a known dangerous receiver — this avoids
+        # false positives from legitimate .run()/.call() on other objects.
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            receiver = func.value.id
+            dangerous_methods = self._DANGEROUS_RECEIVER_METHODS.get(
+                receiver, frozenset()
+            )
+            if func.attr in dangerous_methods:
+                return [f"call:{receiver}.{func.attr}()"]
+        return []
+
+    def _scan_ast_import(self, node: ast.Import) -> list[str]:
+        """Detect dangerous module imports in a single AST Import node."""
+        return [
+            f"import:{alias.name.split('.')[0]}"
+            for alias in node.names
+            if alias.name.split(".")[0] in self._DANGEROUS_IMPORTS
+        ]
+
+    def _scan_regex_threats(self, code: str) -> list[str]:
+        """Collect threats from the regex heuristic layer."""
+        return [
+            label
+            for label, pattern in self._DANGEROUS_PATTERNS.items()
+            if pattern.search(code)
+        ]
 
     def _build_verdict(
         self,

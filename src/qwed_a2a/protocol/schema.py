@@ -7,7 +7,7 @@ All inter-agent messages MUST conform to these schemas before processing.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
