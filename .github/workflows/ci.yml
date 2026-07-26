@@ -54,7 +54,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Upload test results to Mergify CI Insights
-        uses: Mergifyio/gha-mergify-ci@668bd8fd12563b7816b51f69ad8a13652925ac55 # v6
+        uses: Mergifyio/gha-mergify-ci@f16859b8b4496abe98768bed352d5d9c969a2793 # v24
         if: ${{ always() && env.MERGIFY_TOKEN != '' }}
         with:
           token: ${{ secrets.MERGIFY_TOKEN }}
