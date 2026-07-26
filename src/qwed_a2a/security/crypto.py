@@ -2,7 +2,7 @@
 QWED A2A Cryptographic Services.
 
 Provides ECDSA P-256 JWT attestation signing and verification with:
-- Short-lived tokens (5-minute validity — one A2A hop lifetime)
+- Short-lived tokens (5-minute default validity)
 - Thread-safe jti replay prevention registry
 - Session and deployment context binding
 """

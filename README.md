@@ -118,7 +118,7 @@ JWT:     eyJhbGciOiJFUzI1NiIsInR5cCI6InF3ZWQtYTJhLWF0dGVz...
 
 ## 🔬 How It Works
 
-Every inter-agent message flows through **five deterministic stages**:
+Every inter-agent message flows through **four deterministic stages**:
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
@@ -140,9 +140,8 @@ Every inter-agent message flows through **five deterministic stages**:
 |-------|-----------|-------------|
 | **0. Schema** *(endpoint layer)* | Pydantic `AgentMessage` | Validates sender/receiver IDs, payload type, timestamp — runs at FastAPI before `intercept()` |
 | **1. Trust** | `TrustBoundary` | Blocklists, allowlists, pair blocks, token-bucket rate limiting |
-| **2. Bypass** | Trusted agents check | Skips verification for agents in `config.trusted_agents` |
-| **3. Engine** | `_route_to_engine()` | Routes to `finance_guard`, `logic_guard`, `code_guard`, or `passthrough` |
-| **4. Verdict + JWT** | `A2ACryptoService` | Builds verdict and signs with ES256 JWT (payload hash, trace ID) |
+| **2. Engine** | `_route_to_engine()` | Routes to `finance_guard`, `logic_guard`, `code_guard`, or returns `unverifiable` |
+| **3. Verdict + JWT** | `A2ACryptoService` | Builds verdict and signs with ES256 JWT (payload hash, trace ID). UNVERIFIABLE verdicts carry no JWT |
 
 ---
 
@@ -170,26 +169,34 @@ Detects logical contradictions using set-based analysis. If a claim is both asse
 
 > **Determinism:** Contradictions are `sorted()` before output — stable across all environments.
 
-### 🔒 Code Guard — Regex Security Scan
+### 🔒 Code Guard — AST + Heuristic Security Scan
 
-Scans code payloads for dangerous patterns using case-insensitive compiled regex:
+Scans code payloads using a **dual-layer approach**:
+
+**Layer 1 — AST structural analysis (primary):** Parses code into an abstract syntax tree and detects direct dangerous constructs structurally:
+
+| Threat | Example |
+|--------|---------|
+| Dangerous calls | `eval(`, `exec(`, `compile(`, `__import__(` |
+| Dangerous receiver methods | `subprocess.run(`, `os.system(`, `os.popen(` |
+| Dangerous imports | `import subprocess`, `import importlib`, `import ctypes` |
+
+**Layer 2 — Regex heuristic scan (secondary):** Catches obfuscation patterns that survive AST parsing:
 
 | Pattern | Catches |
 |---------|---------|
-| `eval` | `eval(`, `EVAL (`, dynamic evaluation |
-| `exec` | `exec(`, code execution |
-| `subprocess` | `subprocess.run`, `import subprocess`, `from subprocess import` |
-| `os.system` | `os.system(`, shell command execution |
-| `os.popen` | Process spawning via popen |
-| `__import__` | Dynamic imports |
-| `compile` | Code compilation |
-| `importlib` | Runtime module loading |
+| `getattr_builtin` | `getattr(__builtins__, ...)` |
+| `builtins_dict_access` | `__builtins__.__dict__[` |
+| `base64_exec` | `b64decode(` encoded payloads |
+| `dynamic_import` | `__import__(` dynamic imports |
+| `os_system` | `os.system(` shell execution |
+| `os_popen` | `os.popen(` process spawning |
 
-> **Hardened:** Subprocess regex catches import statements and aliases, not just `subprocess.call()`.
+> **Result:** Returns `BLOCKED` if any threat is found (noting which layer detected it), or `HEURISTIC_PASS` if both layers are clean. A `HEURISTIC_PASS` is *not* a deterministic guarantee — it means no known dangerous constructs were found.
 
-### 📦 Passthrough
+### 📦 Passthrough (Unverifiable)
 
-Messages with `payload_type` of `GENERAL` or `DATA_QUERY` are forwarded without verification.
+Messages with `payload_type` of `GENERAL` or `DATA_QUERY` have no verification engine. The interceptor returns an **UNVERIFIABLE** verdict — the message is not forwarded, and no JWT attestation is issued. This prevents false cryptographic claims about unverified content.
 
 ---
 
@@ -235,14 +242,14 @@ boundary.block_pair("agent-A", "agent-B")
 
 ## 🔏 Crypto Attestations
 
-Every verdict includes a signed **ES256 JWT attestation**:
+FORWARDED, BLOCKED, and HEURISTIC_PASS verdicts include a signed **ES256 JWT attestation**. UNVERIFIABLE verdicts carry **no JWT** — issuing a signed token for unverified content would be a false cryptographic claim.
 
 ```json
 {
   "iss": "did:qwed:a2a:local",
   "sub": "sha256:e3b0c44298fc1c...",
   "iat": 1711411200,
-  "exp": 1711497600,
+  "exp": 1711411500,
   "jti": "a2a_trace_001",
   "qwed_a2a": {
     "version": "1.0",
@@ -259,7 +266,7 @@ Every verdict includes a signed **ES256 JWT attestation**:
 | **Algorithm** | ECDSA P-256 (ES256) |
 | **Tamper detection** | `sub` claim contains SHA-256 hash of original payload |
 | **Identity** | DID-based issuer (`did:qwed:a2a:local`) |
-| **Expiry** | 24 hours default |
+| **Expiry** | 300 seconds (5 minutes) default — short-lived attestation token validity window |
 | **Key persistence** | Ephemeral keys replaced by `QWED_A2A_SIGNING_KEY_PEM` env var for audit continuity |
 
 ### Fail-Closed Attestations
@@ -346,7 +353,7 @@ qwed-a2a/
 | `enable_code_verification` | `bool` | `True` | Route code payloads to regex security scanning |
 | `block_on_error` | `bool` | `True` | Block on internal engine errors (set `False` for shadow mode) |
 | `max_payload_size_bytes` | `int` | `1,048,576` | Maximum payload size (1 MB) |
-| `trusted_agents` | `List[str]` | `None` | Agent IDs that bypass verification |
+| `trusted_agents` | `List[str]` | `None` | Agent IDs pre-added to the trust boundary allowlist |
 
 ---
 
