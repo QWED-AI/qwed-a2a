@@ -173,7 +173,7 @@ Detects logical contradictions using set-based analysis. If a claim is both asse
 
 Scans code payloads using a **dual-layer approach**:
 
-**Layer 1 — AST structural analysis (primary):** Parses code into an abstract syntax tree and detects dangerous constructs structurally — before any text-level obfuscation can hide them:
+**Layer 1 — AST structural analysis (primary):** Parses code into an abstract syntax tree and detects direct dangerous constructs structurally:
 
 | Threat | Example |
 |--------|---------|
@@ -266,7 +266,7 @@ FORWARDED, BLOCKED, and HEURISTIC_PASS verdicts include a signed **ES256 JWT att
 | **Algorithm** | ECDSA P-256 (ES256) |
 | **Tamper detection** | `sub` claim contains SHA-256 hash of original payload |
 | **Identity** | DID-based issuer (`did:qwed:a2a:local`) |
-| **Expiry** | 300 seconds (5 minutes) default — one A2A hop lifetime |
+| **Expiry** | 300 seconds (5 minutes) default — short-lived attestation token validity window |
 | **Key persistence** | Ephemeral keys replaced by `QWED_A2A_SIGNING_KEY_PEM` env var for audit continuity |
 
 ### Fail-Closed Attestations
