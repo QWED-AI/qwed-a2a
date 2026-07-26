@@ -259,6 +259,16 @@ class A2AVerificationInterceptor:
                         "line item: each line item must be a mapping."
                     ),
                 }
+            if "amount" not in item:
+                return {
+                    "verified": False,
+                    "status": "unverifiable",
+                    "engine": "finance_guard",
+                    "reason": (
+                        "FINANCIAL_TRANSACTION payload contains incomplete "
+                        "line item: each line item must include an amount."
+                    ),
+                }
             amount = item.get("amount", 0)
             quantity = item.get("quantity", 1)
             computed_total += Decimal(str(amount)) * Decimal(str(quantity))
@@ -333,6 +343,16 @@ class A2AVerificationInterceptor:
                     "reason": (
                         "LOGIC_ASSERTION payload contains malformed "
                         "assertion entry: each assertion must be a mapping."
+                    ),
+                }
+            if "claim" not in assertion:
+                return {
+                    "verified": False,
+                    "status": "unverifiable",
+                    "engine": "logic_guard",
+                    "reason": (
+                        "LOGIC_ASSERTION payload contains incomplete "
+                        "assertion entry: each assertion must include a claim."
                     ),
                 }
             claim = assertion.get("claim", "")

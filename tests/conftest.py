@@ -263,6 +263,33 @@ def logic_non_dict_assertion_message():
 
 
 @pytest.fixture
+def financial_missing_amount_line_item_message():
+    """Financial payload with a line item missing the amount key."""
+    return AgentMessage(
+        sender_agent_id="procurement-agent-001",
+        receiver_agent_id="treasury-agent-002",
+        payload_type=PayloadType.FINANCIAL_TRANSACTION,
+        payload={
+            "data": {
+                "claimed_total": Decimal("0.00"),
+                "line_items": [{"description": "Free item", "quantity": 1}],
+            },
+        },
+    )
+
+
+@pytest.fixture
+def logic_missing_claim_assertion_message():
+    """Logic assertion with a mapping missing the claim key."""
+    return AgentMessage(
+        sender_agent_id="reasoning-agent-006",
+        receiver_agent_id="planner-agent-007",
+        payload_type=PayloadType.LOGIC_ASSERTION,
+        payload={"assertions": [{"negated": False}]},
+    )
+
+
+@pytest.fixture
 def contradictory_logic_message():
     """A logic assertion message with contradictions."""
     return AgentMessage(

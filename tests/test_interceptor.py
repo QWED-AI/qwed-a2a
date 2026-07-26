@@ -113,6 +113,17 @@ class TestInterceptorFinancial:
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is None
 
+    async def test_missing_amount_line_item_returns_unverifiable(
+        self, interceptor, financial_missing_amount_line_item_message
+    ):
+        """Line item without amount key returns UNVERIFIABLE, not FORWARDED."""
+        verdict = await interceptor.intercept(
+            financial_missing_amount_line_item_message, trace_id="t_fin_missing_amt"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "finance_guard"
+        assert verdict.attestation_jwt is None
+
 
 @pytest.mark.asyncio
 class TestInterceptorCode:
@@ -179,6 +190,17 @@ class TestInterceptorLogic:
         """Non-mapping assertion entry returns UNVERIFIABLE."""
         verdict = await interceptor.intercept(
             logic_non_dict_assertion_message, trace_id="t_logic_non_dict"
+        )
+        assert verdict.status == VerdictStatus.UNVERIFIABLE
+        assert verdict.engine_used == "logic_guard"
+        assert verdict.attestation_jwt is None
+
+    async def test_missing_claim_assertion_returns_unverifiable(
+        self, interceptor, logic_missing_claim_assertion_message
+    ):
+        """Assertion without claim key returns UNVERIFIABLE, not FORWARDED."""
+        verdict = await interceptor.intercept(
+            logic_missing_claim_assertion_message, trace_id="t_logic_missing_claim"
         )
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "logic_guard"
