@@ -59,7 +59,7 @@ body:
     id: input
     attributes:
       label: Input that caused the bug
-      description: Share the agent message or code that triggered the issue
+      description: Share a minimal, redacted reproduction. Do not include secrets, tokens, credentials, or personal data; report security issues via SECURITY.md.
       placeholder: |
         AgentMessage(
             sender_agent_id="agent-A",
@@ -82,7 +82,7 @@ body:
     id: actual
     attributes:
       label: Actual behavior
-      description: What actually happened? Include full traceback if applicable.
+      description: What actually happened? Include a redacted traceback if applicable; remove secrets and personal data.
     validations:
       required: true
 

@@ -31,6 +31,12 @@ export QWED_A2A_DEPLOYMENT_ID="dev-deployment"
 export QWED_A2A_SIGNING_KEY_PEM=$(openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt)
 ```
 
+If running the FastAPI gateway, also set the trusted agents:
+
+```bash
+export QWED_A2A_TRUSTED_AGENTS="agent-A,agent-B"
+```
+
 ## Running Tests
 
 ```bash

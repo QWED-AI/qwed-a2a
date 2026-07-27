@@ -17,7 +17,8 @@ jobs:
       - run:
           name: Run tests
           command: |
-            pytest tests/ -v --junitxml=test-results/junit.xml
+            pip install pytest-timeout
+            pytest tests/ -v --timeout=30 --junitxml=test-results/junit.xml
       - store_test_results:
           path: test-results
 
