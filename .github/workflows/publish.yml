@@ -48,18 +48,8 @@ jobs:
             export VERSION="${TAG#v}"
           fi
           echo "Building version: $VERSION"
-          python3 -c "
-import os, re
-version = os.environ['VERSION']
-for path in ['pyproject.toml', 'src/qwed_a2a/__init__.py']:
-    with open(path) as f:
-        content = f.read()
-    content = re.sub(r'__version__\s*=\s*\"[^\"]*\"', f'__version__ = \"{version}\"', content)
-    content = re.sub(r'^version = \".*\"', f'version = \"{version}\"', content, count=1, flags=re.MULTILINE)
-    with open(path, 'w') as f:
-        f.write(content)
-print('Updated version in pyproject.toml and __init__.py')
-"
+          sed -i "s/__version__ = \"[^\"]*\"/__version__ = \"$VERSION\"/" src/qwed_a2a/__init__.py
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
       - name: Build package
         run: python -m build
       - name: Check package
