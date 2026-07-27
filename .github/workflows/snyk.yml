@@ -17,7 +17,7 @@ jobs:
   snyk-dependencies:
     name: Snyk Dependency Scan
     runs-on: ubuntu-latest
-    if: github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.fork == false
+    if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
 
     steps:
       - name: Checkout repository
@@ -53,7 +53,7 @@ jobs:
   snyk-code:
     name: Snyk Code Analysis (SAST)
     runs-on: ubuntu-latest
-    if: github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.fork == false
+    if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
 
     steps:
       - name: Checkout repository
