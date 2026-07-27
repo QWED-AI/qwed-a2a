@@ -15,7 +15,7 @@
   [![Tests](https://github.com/QWED-AI/qwed-a2a/actions/workflows/ci.yml/badge.svg)](https://github.com/QWED-AI/qwed-a2a/actions)
   [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/QWED-AI/qwed-a2a?utm_source=badge)
   [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=QWED-AI_qwed-a2a&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=QWED-AI_qwed-a2a)
-  [![QWED Security](https://img.shields.io/badge/QWED-Security-2EA9DF?logo=qwedai&logoColor=white)](https://github.com/marketplace/actions/qwed-verification)
+  [![QWED Security](https://img.shields.io/badge/GitHub_Marketplace-QWED_Security_%E2%9C%93-2ea44f?style=flat&logo=github&logoColor=white)](https://github.com/marketplace/qwed-security)
   [![Snyk](https://img.shields.io/badge/Snyk-Security_Monitored-4C4F4D?logo=snyk&logoColor=white)](https://snyk.io/test/github/QWED-AI/qwed-a2a)
   [![GitHub stars](https://img.shields.io/github/stars/QWED-AI/qwed-a2a?style=social)](https://github.com/QWED-AI/qwed-a2a)
 
