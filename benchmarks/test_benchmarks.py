@@ -193,26 +193,29 @@ def test_verify_attestation(benchmark):
     crypto = A2ACryptoService(issuer_id="did:qwed:a2a:bench")
     payload = _financial_payload(5)
     payload_hash = crypto.payload_hash(payload)
-    token = crypto.sign_verdict(
-        trace_id="trace-verify",
-        verdict_status="forwarded",
-        engine="finance_guard",
-        sender_id="procurement-agent-001",
-        receiver_id="treasury-agent-002",
-        payload_hash=payload_hash,
-    )
     context = AttestationContext(
         sender_agent_id="procurement-agent-001",
         receiver_agent_id="treasury-agent-002",
         payload=payload,
     )
 
+    # Pre-generate a pool of tokens with unique jtis so that each
+    # benchmark iteration exercises the full verification path without
+    # short-circuiting on replay detection.
+    tokens = iter(
+        crypto.sign_verdict(
+            trace_id=f"verify-bench-{i}",
+            verdict_status="forwarded",
+            engine="finance_guard",
+            sender_id="procurement-agent-001",
+            receiver_id="treasury-agent-002",
+            payload_hash=payload_hash,
+        )
+        for i in range(500)
+    )
+
     def _verify():
-        # jti replay protection is stateful: clear the registry each iteration
-        # so we always exercise the full (successful) verification path rather
-        # than short-circuiting on a replay detection after the first call.
-        crypto._jti_registry._seen.clear()
-        return crypto.verify_attestation(token, context)
+        return crypto.verify_attestation(next(tokens), context)
 
     benchmark(_verify)
 
