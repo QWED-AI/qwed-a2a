@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / Discussion
+    url: https://github.com/QWED-AI/qwed-a2a/discussions
+    about: Ask questions or discuss ideas in GitHub Discussions
+  - name: Documentation
+    url: https://docs.qwedai.com/a2a/overview
+    about: Check our documentation first
+  - name: Security Issue
+    url: https://github.com/QWED-AI/qwed-a2a/security/policy
+    about: Report security vulnerabilities privately
