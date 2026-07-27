@@ -1,0 +1,8 @@
+steps:
+  - label: "Run Tests"
+    command:
+      - pip install --upgrade pip
+      - pip install -e ".[dev]"
+      - pip install pytest-timeout
+      - pytest tests/ -x --timeout=30 -q -p no:cacheprovider
+    timeout_in_minutes: 10

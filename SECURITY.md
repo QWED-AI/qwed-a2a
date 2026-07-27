@@ -2,42 +2,40 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+| Version | Supported |
+|---------|-----------|
+| 0.x     | Yes       |
 
 ## Reporting a Vulnerability
 
-We take the security of QWED A2A very seriously. If you discover a security vulnerability, please report it to us immediately.
+QWED A2A is a security-critical component — it intercepts and verifies all
+inter-agent communication. If you discover a vulnerability, please report it
+privately.
 
-### How to Report
+**Email:** rahul@qwedai.com
 
-Please do **not** report security vulnerabilities through public GitHub issues.
+Do NOT open a public GitHub issue for security vulnerabilities.
 
-Instead, please report them via email to:
-**security@qwedai.com**
+### What to Include
 
-Provide detailed information to enable reproduction and resolution of the issue, including:
-*   Steps to reproduce the vulnerability.
-*   Relevant code or configuration.
-*   The potential impact of the vulnerability.
+- Description of the vulnerability
+- Steps to reproduce
+- Affected versions
+- Any potential mitigations you've identified
 
 ### Response Timeline
 
-We are committed to addressing security issues promptly.
-*   We will acknowledge your report within **24 hours**.
-*   Our team will work with you to understand and resolve the issue.
-*   Expect regular progress updates throughout the process.
+- Acknowledgment within 24 hours
+- Initial assessment within 72 hours
+- Fix timeline communicated after assessment
 
-### Reporter Credit
+## Coordinated Disclosure
 
-We value the security community and will publicly credit vulnerability reporters who responsibly disclose issues and do not request anonymity. Credit will be given in our release notes and SECURITY.md history.
+We follow coordinated disclosure. We will work with you to understand the
+issue and release a fix before public disclosure. Reporter credit will be
+given in the release notes.
 
-## Security Issue vs. Bug
+## Security vs. Bug
 
-To help us triage issues effectively, please distinguish between security issues and bugs:
-
-*   **Security Issue:** A vulnerability that compromises the confidentiality, integrity, or availability of the system (e.g., payload tampering, cryptographic bypass, unauthorized agent forwarding). Please report these via email as described above.
-*   **Bug:** A functional defect or unexpected behavior that does not have security implications (e.g., UI glitch, incorrect calculation, crash without exploitability). Please report these via the [GitHub Issue Tracker](https://github.com/QWED-AI/qwed-a2a/issues).
-
-Thank you for helping keep QWED A2A secure!
+If you're unsure whether something is a security issue or a regular bug,
+err on the side of caution and report it via email.
