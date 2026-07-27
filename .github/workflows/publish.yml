@@ -43,9 +43,9 @@ jobs:
           MANUAL_VERSION: ${{ github.event.inputs.version }}
         run: |
           if [ -n "$MANUAL_VERSION" ]; then
-            VERSION="$MANUAL_VERSION"
+            export VERSION="$MANUAL_VERSION"
           else
-            VERSION="${TAG#v}"
+            export VERSION="${TAG#v}"
           fi
           echo "Building version: $VERSION"
           python3 -c "
