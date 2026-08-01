@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/logo.svg" alt="QWED Logo" width="80" height="80">
+  <img src="assets/logo.png" alt="QWED Logo" width="80" height="80">
   <h1>QWED A2A</h1>
   <h3>Zero-Trust Verification Interceptor for Agent-to-Agent Communication</h3>
 
