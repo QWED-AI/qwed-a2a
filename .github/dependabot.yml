@@ -8,6 +8,11 @@ updates:
       - "dependencies"
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # pydantic-core is an exact-pinned transitive dep of pydantic
+      # (pydantic declares pydantic-core==X.Y.Z); bumping it alone
+      # produces an unresolvable pip conflict (#52)
+      - dependency-name: "pydantic-core"
 
   - package-ecosystem: "github-actions"
     directory: "/"
