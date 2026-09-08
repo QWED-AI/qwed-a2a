@@ -404,6 +404,19 @@ class TestInterceptAuth:
         )
         assert resp.status_code == 401
 
+    def test_oversized_key_config_rejected(self):
+        """Absurdly large key maps fail closed instead of reaching the parser.
+
+        (70KB cannot travel via real env vars on all platforms, so the
+        sanitizer is exercised directly — the endpoint path is covered by
+        test_malformed_keys_deny_all.)
+        """
+        with pytest.raises(ValueError):
+            ep._sanitize_keys_json("{" + "x" * 70000)
+        with pytest.raises(ValueError):
+            ep._sanitize_keys_json("[1, 2]")
+        assert ep._sanitize_keys_json('{"k": "v"}') == '{"k": "v"}'
+
     def test_misconfig_warning_rate_limited(self, client, monkeypatch, caplog):
         """Alternating broken configs warn at most once per minute."""
         import logging

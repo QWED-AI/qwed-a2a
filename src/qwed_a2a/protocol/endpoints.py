@@ -107,6 +107,27 @@ def _valid_agent_id(agent: object) -> str | None:
     return normalized
 
 
+# Fail-closed bound on the operator key-map payload before parsing.
+_MAX_KEYS_JSON_CHARS = 65536
+
+
+def _sanitize_keys_json(raw: Any) -> str:
+    """Sanitize the operator key-map envelope before JSON parsing.
+
+    Trust-boundary sanitizer (recognized by the QWED taint engine):
+    only bounded, JSON-object-shaped text reaches ``json.loads``.
+    Raises ValueError on anything else — callers fail closed.
+    """
+    if not isinstance(raw, str):
+        raise ValueError("key map must be text")
+    text = raw.strip()
+    if not text or len(text) > _MAX_KEYS_JSON_CHARS:
+        raise ValueError("key map has invalid size")
+    if not (text.startswith("{") and text.endswith("}")):
+        raise ValueError("key map must be a JSON object")
+    return text
+
+
 def _load_api_keys() -> dict[str, str]:
     """Load the API-key -> agent-ID map from QWED_A2A_API_KEYS.
 
@@ -123,8 +144,8 @@ def _load_api_keys() -> dict[str, str]:
         )
         return {}
     try:
-        parsed = json.loads(raw)
-    except ValueError:
+        parsed = json.loads(_sanitize_keys_json(raw))
+    except (ValueError, RecursionError):
         _warn_api_keys_misconfigured(
             "QWED_A2A_API_KEYS is not a JSON object; /a2a/intercept "
             "denies all requests until it is fixed."
