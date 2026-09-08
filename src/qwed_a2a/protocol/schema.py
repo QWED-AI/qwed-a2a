@@ -43,7 +43,12 @@ class AgentMessage(BaseModel):
         ...,
         min_length=1,
         max_length=256,
-        description="Unique identifier of the sending agent",
+        description=(
+            "Unique identifier of the sending agent. Over HTTP, the "
+            "authenticated API-key identity overrides this value — never "
+            "trust it from the wire. Direct library callers own identity "
+            "binding: do not pass untrusted IDs."
+        ),
     )
     receiver_agent_id: str = Field(
         ...,
@@ -60,10 +65,6 @@ class AgentMessage(BaseModel):
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="ISO 8601 timestamp of message creation",
-    )
-    signature: str | None = Field(
-        default=None,
-        description="Optional JWT signature from the sender for tamper detection",
     )
     metadata: dict[str, Any] | None = Field(
         default=None,

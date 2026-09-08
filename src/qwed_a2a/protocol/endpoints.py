@@ -4,12 +4,14 @@ QWED A2A Protocol Endpoints.
 FastAPI router exposing the A2A verification gateway via HTTP.
 """
 
+import hmac
+import json
 import os
 import threading
 import uuid
-from typing import Any
+from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from qwed_a2a import __version__
 from qwed_a2a.interceptor import A2AVerificationInterceptor
@@ -68,15 +70,115 @@ def configure_interceptor(config: InterceptorConfig) -> None:
         _interceptor = new_interceptor
 
 
+# Last raw QWED_A2A_API_KEYS value warned about. Misconfiguration
+# warnings must be loud (the endpoint denies everything until keys are
+# configured) but must not become a log-spam vector under
+# unauthenticated scanning — so each distinct broken value warns once.
+_API_KEYS_WARNED_RAW: Any = None
+
+
+def _warn_api_keys_misconfigured(raw: str, message: str) -> None:
+    """Log a key-config problem once per distinct broken value."""
+    global _API_KEYS_WARNED_RAW
+    if _API_KEYS_WARNED_RAW != raw:
+        _API_KEYS_WARNED_RAW = raw
+        logger.warning(message)
+
+
+def _load_api_keys() -> Dict[str, str]:
+    """Load the API-key -> agent-ID map from QWED_A2A_API_KEYS.
+
+    Format is a JSON object mapping each key to its agent, e.g.
+    ``{"key-abc123": "procurement-agent"}``. The map is read fresh on
+    every call so key rotation takes effect without a restart. Returns
+    an empty map when unconfigured or malformed (callers fail closed).
+    """
+    raw = os.environ.get("QWED_A2A_API_KEYS", "")
+    if not raw.strip():
+        _warn_api_keys_misconfigured(
+            raw,
+            "QWED_A2A_API_KEYS is not set; /a2a/intercept denies all "
+            "requests until per-agent API keys are configured.",
+        )
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        _warn_api_keys_misconfigured(
+            raw,
+            "QWED_A2A_API_KEYS is not a JSON object; /a2a/intercept "
+            "denies all requests until it is fixed.",
+        )
+        return {}
+    if not isinstance(parsed, dict):
+        _warn_api_keys_misconfigured(
+            raw,
+            "QWED_A2A_API_KEYS must be a JSON object mapping API keys "
+            "to agent IDs; /a2a/intercept denies all requests until "
+            "it is fixed.",
+        )
+        return {}
+    keys: Dict[str, str] = {}
+    for key, agent in parsed.items():
+        if isinstance(key, str) and key and isinstance(agent, str) and agent.strip():
+            keys[key] = agent
+    if not keys:
+        _warn_api_keys_misconfigured(
+            raw,
+            "QWED_A2A_API_KEYS contains no usable key->agent entries; "
+            "/a2a/intercept denies all requests until it is fixed.",
+        )
+    return keys
+
+
+async def require_agent_identity(request: Request) -> str:
+    """Authenticate the caller and return its server-side agent ID (#83).
+
+    The ``X-API-Key`` header selects the caller; the returned ID — never
+    the body-declared ``sender_agent_id`` — is the identity the trust
+    boundary and the attestation verdict bind to. Missing, unknown, or
+    unconfigured keys fail closed with 401.
+    """
+    provided = request.headers.get("x-api-key", "")
+    key_map = _load_api_keys()
+    if not key_map:
+        raise HTTPException(
+            status_code=401,
+            detail="API authentication is not configured for this service.",
+        )
+    for stored_key, agent_id in key_map.items():
+        if hmac.compare_digest(provided.encode("utf-8"), stored_key.encode("utf-8")):
+            return agent_id
+    raise HTTPException(
+        status_code=401,
+        detail="Invalid or missing API key.",
+    )
+
+
 @router.post("/intercept", response_model=dict[str, Any])
-async def intercept_message(message: AgentMessage) -> dict[str, Any]:
+async def intercept_message(
+    message: AgentMessage,
+    agent_id: str = Depends(require_agent_identity),
+) -> dict[str, Any]:
     """
     Primary A2A verification gateway.
 
     Accepts an AgentMessage, runs it through the verification pipeline,
     and returns a VerificationVerdict.
+
+    The authenticated API-key identity OVERRIDES the body-declared
+    sender_agent_id (#83): trust evaluation, rate limiting, telemetry,
+    and the attestation JWT all bind to the credential's agent, never
+    to a self-declared string from the wire.
     """
     try:
+        if message.sender_agent_id != agent_id:
+            logger.warning(
+                "sender_agent_id %r overridden by authenticated identity %r",
+                message.sender_agent_id,
+                agent_id,
+            )
+            message.sender_agent_id = agent_id
         interceptor = get_interceptor()
         trace_id = f"a2a_{uuid.uuid4().hex[:12]}"
         verdict = await interceptor.intercept(message, trace_id=trace_id)

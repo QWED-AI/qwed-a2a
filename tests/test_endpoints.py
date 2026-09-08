@@ -6,6 +6,8 @@ Covers: get_interceptor(), configure_interceptor(), _load_trusted_agents(),
 
 from unittest.mock import MagicMock, patch
 
+import json
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -149,13 +151,41 @@ class TestMetricsEndpoint:
 
 
 class TestInterceptEndpoint:
+    # #83: every /a2a/intercept call authenticates now — tests below run
+    # with keys configured unless the test is about auth itself.
+    @staticmethod
+    def _auth_env(monkeypatch, mapping=None):
+        monkeypatch.setenv(
+            "QWED_A2A_API_KEYS",
+            json.dumps(
+                mapping
+                or {
+                    "key-alpha": "agent-alpha",
+                    "key-procurement": "procurement-agent",
+                }
+            ),
+        )
+
+    @staticmethod
+    def _auth_headers(key="key-alpha"):
+        return {"x-api-key": key}
+
     def test_general_message_returns_200(self, client, general_payload, monkeypatch):
         monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
-        assert client.post("/a2a/intercept", json=general_payload).status_code == 200
+        self._auth_env(monkeypatch)
+        assert (
+            client.post(
+                "/a2a/intercept", json=general_payload, headers=self._auth_headers()
+            ).status_code
+            == 200
+        )
 
     def test_returns_verdict_fields(self, client, general_payload, monkeypatch):
         monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
-        data = client.post("/a2a/intercept", json=general_payload).json()
+        self._auth_env(monkeypatch)
+        data = client.post(
+            "/a2a/intercept", json=general_payload, headers=self._auth_headers()
+        ).json()
         assert "status" in data
         assert "audit_trace_id" in data
 
@@ -164,35 +194,168 @@ class TestInterceptEndpoint:
         monkeypatch.setenv(
             "QWED_A2A_TRUSTED_AGENTS", "procurement-agent,treasury-agent"
         )
-        resp = client.post("/a2a/intercept", json=financial_payload)
+        self._auth_env(monkeypatch)
+        resp = client.post(
+            "/a2a/intercept",
+            json=financial_payload,
+            headers=self._auth_headers("key-procurement"),
+        )
         assert resp.status_code == 200
         assert resp.json()["status"] == "forwarded"
 
     def test_malformed_body_returns_422(self, client, monkeypatch):
         monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
-        assert client.post("/a2a/intercept", json={"bad": "data"}).status_code == 422
+        self._auth_env(monkeypatch)
+        assert (
+            client.post(
+                "/a2a/intercept",
+                json={"bad": "data"},
+                headers=self._auth_headers(),
+            ).status_code
+            == 422
+        )
 
     def test_runtime_error_returns_503(self, client, general_payload, monkeypatch):
         monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
+        self._auth_env(monkeypatch)
 
         async def _raise(*a, **kw):
             raise RuntimeError("crypto unavailable")
 
         with patch.object(ep.A2AVerificationInterceptor, "intercept", new=_raise):
             assert (
-                client.post("/a2a/intercept", json=general_payload).status_code == 503
+                client.post(
+                    "/a2a/intercept",
+                    json=general_payload,
+                    headers=self._auth_headers(),
+                ).status_code
+                == 503
             )
 
     def test_unexpected_error_returns_500(self, client, general_payload, monkeypatch):
         monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
+        self._auth_env(monkeypatch)
 
         async def _raise(*a, **kw):
             raise ValueError("unexpected boom")
 
         with patch.object(ep.A2AVerificationInterceptor, "intercept", new=_raise):
             assert (
-                client.post("/a2a/intercept", json=general_payload).status_code == 500
+                client.post(
+                    "/a2a/intercept",
+                    json=general_payload,
+                    headers=self._auth_headers(),
+                ).status_code
+                == 500
             )
+
+
+# ─── /a2a/intercept authentication (#83) ─────────────────────────────────
+
+
+class TestInterceptAuth:
+    """Transport authentication: the API-key identity overrides the body."""
+
+    def _keys(self, monkeypatch, mapping):
+        monkeypatch.setenv("QWED_A2A_API_KEYS", json.dumps(mapping))
+
+    def test_missing_key_denied(self, client, general_payload, monkeypatch):
+        self._keys(monkeypatch, {"key-alpha": "agent-alpha"})
+        resp = client.post("/a2a/intercept", json=general_payload)
+        assert resp.status_code == 401
+
+    def test_unknown_key_denied(self, client, general_payload, monkeypatch):
+        self._keys(monkeypatch, {"key-alpha": "agent-alpha"})
+        resp = client.post(
+            "/a2a/intercept", json=general_payload, headers={"x-api-key": "nope"}
+        )
+        assert resp.status_code == 401
+
+    def test_unconfigured_keys_deny_all(self, client, general_payload, monkeypatch):
+        monkeypatch.delenv("QWED_A2A_API_KEYS", raising=False)
+        monkeypatch.setenv(
+            "QWED_A2A_TRUSTED_AGENTS", "agent-alpha,agent-beta"
+        )
+        resp = client.post(
+            "/a2a/intercept", json=general_payload, headers={"x-api-key": "whatever"}
+        )
+        assert resp.status_code == 401
+
+    def test_malformed_keys_deny_all(self, client, general_payload, monkeypatch):
+        monkeypatch.setenv("QWED_A2A_API_KEYS", "{not-json")
+        resp = client.post(
+            "/a2a/intercept", json=general_payload, headers={"x-api-key": "whatever"}
+        )
+        assert resp.status_code == 401
+
+    def test_spoofed_sender_overridden_by_key_identity(
+        self, client, financial_payload, monkeypatch
+    ):
+        """#83 repro: key for procurement-agent, body claims treasury-agent.
+
+        The request is processed — and attested — AS procurement-agent.
+        """
+        import jwt as pyjwt
+
+        monkeypatch.setenv(
+            "QWED_A2A_TRUSTED_AGENTS", "procurement-agent,treasury-agent"
+        )
+        self._keys(monkeypatch, {"key-procurement": "procurement-agent"})
+        spoofed = dict(financial_payload)
+        spoofed["sender_agent_id"] = "treasury-agent"
+        resp = client.post(
+            "/a2a/intercept",
+            json=spoofed,
+            headers={"x-api-key": "key-procurement"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "forwarded"
+        claims = pyjwt.decode(
+            body["attestation_jwt"], options={"verify_signature": False}
+        )
+        assert claims["qwed_a2a"]["sender"] == "procurement-agent"
+
+    def test_key_rotation_without_restart(
+        self, client, general_payload, monkeypatch
+    ):
+        """Keys load per request: rotating env changes who can call."""
+        monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
+        self._keys(monkeypatch, {"key-alpha": "agent-alpha"})
+        ok = client.post(
+            "/a2a/intercept",
+            json=general_payload,
+            headers={"x-api-key": "key-alpha"},
+        )
+        assert ok.status_code == 200
+        self._keys(monkeypatch, {"key-alpha-rotated": "agent-alpha"})
+        assert (
+            client.post(
+                "/a2a/intercept",
+                json=general_payload,
+                headers={"x-api-key": "key-alpha"},
+            ).status_code
+            == 401
+        )
+        assert (
+            client.post(
+                "/a2a/intercept",
+                json=general_payload,
+                headers={"x-api-key": "key-alpha-rotated"},
+            ).status_code
+            == 200
+        )
+
+    def test_signature_field_ignored(self, client, general_payload, monkeypatch):
+        """#19: the dead signature field is not part of the contract —
+        extra fields never affect parsing or identity."""
+        self._keys(monkeypatch, {"key-alpha": "agent-alpha"})
+        payload = dict(general_payload)
+        payload["signature"] = "dead-on-arrival"
+        resp = client.post(
+            "/a2a/intercept", json=payload, headers={"x-api-key": "key-alpha"}
+        )
+        assert resp.status_code == 200
 
 
 # ─── /.well-known/jwks.json ────────────────────────────────────────────────────
