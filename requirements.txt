@@ -61,11 +61,11 @@ pluggy==1.6.0
     #   pytest-cov
 pycparser==3.0
     # via cffi
-pydantic==2.13.4
+pydantic==2.13.5
     # via
     #   fastapi
     #   qwed-a2a (pyproject.toml)
-pydantic-core==2.46.4
+pydantic-core==2.46.5
     # via pydantic
 pygments==2.20.0
     # via
