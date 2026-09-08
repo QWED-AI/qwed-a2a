@@ -288,7 +288,20 @@ falling back to an ephemeral key.
 
 ## 🚀 FastAPI Gateway
 
-QWED A2A includes a ready-to-use HTTP gateway. Because the interceptor uses a zero-trust default posture, you must whitelist agents via the `QWED_A2A_TRUSTED_AGENTS` environment variable.
+QWED A2A includes a ready-to-use HTTP gateway. Because the interceptor uses a zero-trust default posture, you must whitelist agents via the `QWED_A2A_TRUSTED_AGENTS` environment variable — and every `/a2a/intercept` caller must authenticate with a per-agent API key. The key's agent identity overrides the body's `sender_agent_id`; there is no anonymous access.
+
+```python
+from fastapi import FastAPI
+from qwed_a2a.protocol.endpoints import router, wellknown_router
+
+app = FastAPI(title="QWED A2A Gateway")
+app.include_router(router)
+app.include_router(wellknown_router)
+
+# QWED_A2A_TRUSTED_AGENTS="agent-A,agent-B" QWED_A2A_API_KEYS='{"key-for-A": "agent-A", "key-for-B": "agent-B"}' uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+`QWED_A2A_API_KEYS` is a JSON object mapping each API key to its agent ID. Keys are read per request, so rotation needs no restart; missing, unknown, or unconfigured keys fail closed with 401. Agent IDs are normalized to the `AgentMessage` contract (trimmed, max 256 chars, no control characters) — entries that violate it are dropped and their keys denied.
 
 ```python
 from fastapi import FastAPI
@@ -315,6 +328,7 @@ app.include_router(wellknown_router)
 ```bash
 curl -X POST http://localhost:8000/a2a/intercept \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: key-for-A" \
   -d '{
     "sender_agent_id": "agent-A",
     "receiver_agent_id": "agent-B",
@@ -322,6 +336,11 @@ curl -X POST http://localhost:8000/a2a/intercept \
     "payload": {"message": "Hello!"}
   }'
 ```
+
+The `X-API-Key` header selects the caller: the response is processed
+and attested as that key's agent even if `sender_agent_id` names
+someone else. Direct library callers (no HTTP) own identity binding
+themselves — never feed untrusted IDs to `intercept()`.
 
 ---
 

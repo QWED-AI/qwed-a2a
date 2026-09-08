@@ -8,8 +8,9 @@ import hmac
 import json
 import os
 import threading
+import time
 import uuid
-from typing import Any, Dict
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -70,22 +71,43 @@ def configure_interceptor(config: InterceptorConfig) -> None:
         _interceptor = new_interceptor
 
 
-# Last raw QWED_A2A_API_KEYS value warned about. Misconfiguration
-# warnings must be loud (the endpoint denies everything until keys are
-# configured) but must not become a log-spam vector under
-# unauthenticated scanning — so each distinct broken value warns once.
-_API_KEYS_WARNED_RAW: Any = None
+# Monotonic timestamp of the last key-misconfiguration warning.
+# Misconfiguration warnings must be loud (the endpoint denies everything
+# until keys are configured) but must not become a log-spam vector under
+# unauthenticated scanning — or flap forever when two broken configs
+# alternate. At most one warning per minute, whatever the sequence.
+_API_KEYS_LAST_WARN: float = 0.0
+_API_KEYS_WARN_INTERVAL = 60.0
 
 
-def _warn_api_keys_misconfigured(raw: str, message: str) -> None:
-    """Log a key-config problem once per distinct broken value."""
-    global _API_KEYS_WARNED_RAW
-    if _API_KEYS_WARNED_RAW != raw:
-        _API_KEYS_WARNED_RAW = raw
+def _warn_api_keys_misconfigured(message: str) -> None:
+    """Log a key-config problem, rate-limited to one per minute."""
+    global _API_KEYS_LAST_WARN
+    now = time.monotonic()
+    if now - _API_KEYS_LAST_WARN >= _API_KEYS_WARN_INTERVAL:
+        _API_KEYS_LAST_WARN = now
         logger.warning(message)
 
 
-def _load_api_keys() -> Dict[str, str]:
+def _valid_agent_id(agent: object) -> str | None:
+    """Normalize an env-configured agent ID to the AgentMessage contract.
+
+    Strips surrounding whitespace and enforces the same rules as
+    ``AgentMessage.validate_agent_id_format`` (non-empty, max 256 chars,
+    no control characters). Returns the canonical ID, or None when the
+    entry is unusable — its key then fails closed as unknown.
+    """
+    if not isinstance(agent, str):
+        return None
+    normalized = agent.strip()
+    if not normalized or len(normalized) > 256:
+        return None
+    if any(ord(c) < 32 for c in normalized):
+        return None
+    return normalized
+
+
+def _load_api_keys() -> dict[str, str]:
     """Load the API-key -> agent-ID map from QWED_A2A_API_KEYS.
 
     Format is a JSON object mapping each key to its agent, e.g.
@@ -96,42 +118,42 @@ def _load_api_keys() -> Dict[str, str]:
     raw = os.environ.get("QWED_A2A_API_KEYS", "")
     if not raw.strip():
         _warn_api_keys_misconfigured(
-            raw,
             "QWED_A2A_API_KEYS is not set; /a2a/intercept denies all "
-            "requests until per-agent API keys are configured.",
+            "requests until per-agent API keys are configured."
         )
         return {}
     try:
         parsed = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         _warn_api_keys_misconfigured(
-            raw,
             "QWED_A2A_API_KEYS is not a JSON object; /a2a/intercept "
-            "denies all requests until it is fixed.",
+            "denies all requests until it is fixed."
         )
         return {}
     if not isinstance(parsed, dict):
         _warn_api_keys_misconfigured(
-            raw,
             "QWED_A2A_API_KEYS must be a JSON object mapping API keys "
             "to agent IDs; /a2a/intercept denies all requests until "
-            "it is fixed.",
+            "it is fixed."
         )
         return {}
-    keys: Dict[str, str] = {}
+    keys: dict[str, str] = {}
     for key, agent in parsed.items():
-        if isinstance(key, str) and key and isinstance(agent, str) and agent.strip():
-            keys[key] = agent
+        if not (isinstance(key, str) and key):
+            continue
+        canonical = _valid_agent_id(agent)
+        if canonical is None:
+            continue
+        keys[key] = canonical
     if not keys:
         _warn_api_keys_misconfigured(
-            raw,
             "QWED_A2A_API_KEYS contains no usable key->agent entries; "
-            "/a2a/intercept denies all requests until it is fixed.",
+            "/a2a/intercept denies all requests until it is fixed."
         )
     return keys
 
 
-async def require_agent_identity(request: Request) -> str:
+def require_agent_identity(request: Request) -> str:
     """Authenticate the caller and return its server-side agent ID (#83).
 
     The ``X-API-Key`` header selects the caller; the returned ID — never
@@ -158,7 +180,7 @@ async def require_agent_identity(request: Request) -> str:
 @router.post("/intercept", response_model=dict[str, Any])
 async def intercept_message(
     message: AgentMessage,
-    agent_id: str = Depends(require_agent_identity),
+    agent_id: Annotated[str, Depends(require_agent_identity)],
 ) -> dict[str, Any]:
     """
     Primary A2A verification gateway.

@@ -357,6 +357,85 @@ class TestInterceptAuth:
         )
         assert resp.status_code == 200
 
+    def test_padded_agent_id_normalized(
+        self, client, financial_payload, monkeypatch
+    ):
+        """Configured IDs canonicalize: padded mapping authenticates as
+        the trimmed agent everywhere (trust, JWT, telemetry)."""
+        import jwt as pyjwt
+
+        monkeypatch.setenv(
+            "QWED_A2A_TRUSTED_AGENTS", "procurement-agent,treasury-agent"
+        )
+        self._keys(monkeypatch, {"key-padded": "  procurement-agent  "})
+        resp = client.post(
+            "/a2a/intercept",
+            json=financial_payload,
+            headers={"x-api-key": "key-padded"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "forwarded"
+        claims = pyjwt.decode(
+            resp.json()["attestation_jwt"], options={"verify_signature": False}
+        )
+        assert claims["qwed_a2a"]["sender"] == "procurement-agent"
+
+    def test_control_char_agent_id_rejected(
+        self, client, general_payload, monkeypatch
+    ):
+        """Agent IDs violating the AgentMessage contract never enter the
+        map — their keys fail closed as unknown."""
+        self._keys(monkeypatch, {"key-evil": "bad\x00agent"})
+        resp = client.post(
+            "/a2a/intercept",
+            json=general_payload,
+            headers={"x-api-key": "key-evil"},
+        )
+        assert resp.status_code == 401
+
+    def test_overlong_agent_id_rejected(
+        self, client, general_payload, monkeypatch
+    ):
+        self._keys(monkeypatch, {"key-long": "a" * 257})
+        resp = client.post(
+            "/a2a/intercept",
+            json=general_payload,
+            headers={"x-api-key": "key-long"},
+        )
+        assert resp.status_code == 401
+
+    def test_misconfig_warning_rate_limited(self, client, monkeypatch, caplog):
+        """Alternating broken configs warn at most once per minute."""
+        import logging
+        import time as time_mod
+
+        saved = ep._API_KEYS_LAST_WARN
+        now = [1000.0]
+        monkeypatch.setattr(time_mod, "monotonic", lambda: now[0])
+        ep._API_KEYS_LAST_WARN = 0.0
+        try:
+            with caplog.at_level(logging.WARNING):
+                monkeypatch.delenv("QWED_A2A_API_KEYS", raising=False)
+                ep._load_api_keys()
+                monkeypatch.setenv("QWED_A2A_API_KEYS", "{broken")
+                ep._load_api_keys()
+                denied = [
+                    r
+                    for r in caplog.records
+                    if "denies all" in r.getMessage()
+                ]
+                assert len(denied) == 1
+                now[0] += 61.0
+                ep._load_api_keys()
+                denied = [
+                    r
+                    for r in caplog.records
+                    if "denies all" in r.getMessage()
+                ]
+                assert len(denied) == 2
+        finally:
+            ep._API_KEYS_LAST_WARN = saved
+
 
 # ─── /.well-known/jwks.json ────────────────────────────────────────────────────
 

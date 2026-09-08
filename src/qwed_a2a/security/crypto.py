@@ -170,6 +170,7 @@ class A2ACryptoService:
     Handles cryptographic signing and verification for A2A payloads.
 
     - Signs verification verdicts with short-lived ES256 JWT attestations.
+    - Verifies incoming agent message signatures.
     - Manages ECDSA P-256 key pairs.
     - Enforces jti replay prevention via JtiRegistry.
     """
