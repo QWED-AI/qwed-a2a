@@ -417,37 +417,46 @@ class TestInterceptAuth:
             ep._sanitize_keys_json("[1, 2]")
         assert ep._sanitize_keys_json('{"k": "v"}') == '{"k": "v"}'
 
+    def test_surrogate_key_denied_not_500(
+        self, client, general_payload, monkeypatch
+    ):
+        """A misconfigured key that cannot UTF-8-encode fails closed with
+        401 — never a 500 (Sentry: surrogate escape in key JSON)."""
+        monkeypatch.setenv("QWED_A2A_API_KEYS", '{"k\\udc00": "agent-alpha"}')
+        resp = client.post(
+            "/a2a/intercept",
+            json=general_payload,
+            headers={"x-api-key": "k"},
+        )
+        assert resp.status_code == 401
+
     def test_misconfig_warning_rate_limited(self, client, monkeypatch, caplog):
         """Alternating broken configs warn at most once per minute."""
         import logging
         import time as time_mod
 
-        saved = ep._API_KEYS_LAST_WARN
         now = [1000.0]
         monkeypatch.setattr(time_mod, "monotonic", lambda: now[0])
-        ep._API_KEYS_LAST_WARN = 0.0
-        try:
-            with caplog.at_level(logging.WARNING):
-                monkeypatch.delenv("QWED_A2A_API_KEYS", raising=False)
-                ep._load_api_keys()
-                monkeypatch.setenv("QWED_A2A_API_KEYS", "{broken")
-                ep._load_api_keys()
-                denied = [
-                    r
-                    for r in caplog.records
-                    if "denies all" in r.getMessage()
-                ]
-                assert len(denied) == 1
-                now[0] += 61.0
-                ep._load_api_keys()
-                denied = [
-                    r
-                    for r in caplog.records
-                    if "denies all" in r.getMessage()
-                ]
-                assert len(denied) == 2
-        finally:
-            ep._API_KEYS_LAST_WARN = saved
+        monkeypatch.setattr(ep, "_API_KEYS_LAST_WARN", 0.0)
+        with caplog.at_level(logging.WARNING):
+            monkeypatch.delenv("QWED_A2A_API_KEYS", raising=False)
+            ep._load_api_keys()
+            monkeypatch.setenv("QWED_A2A_API_KEYS", "{broken")
+            ep._load_api_keys()
+            denied = [
+                r
+                for r in caplog.records
+                if "denies all" in r.getMessage()
+            ]
+            assert len(denied) == 1
+            now[0] += 61.0
+            ep._load_api_keys()
+            denied = [
+                r
+                for r in caplog.records
+                if "denies all" in r.getMessage()
+            ]
+            assert len(denied) == 2
 
 
 # ─── /.well-known/jwks.json ────────────────────────────────────────────────────

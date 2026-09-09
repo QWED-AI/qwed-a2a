@@ -111,15 +111,13 @@ def _valid_agent_id(agent: object) -> str | None:
 _MAX_KEYS_JSON_CHARS = 65536
 
 
-def _sanitize_keys_json(raw: Any) -> str:
+def _sanitize_keys_json(raw: str) -> str:
     """Sanitize the operator key-map envelope before JSON parsing.
 
     Trust-boundary sanitizer (recognized by the QWED taint engine):
     only bounded, JSON-object-shaped text reaches ``json.loads``.
     Raises ValueError on anything else — callers fail closed.
     """
-    if not isinstance(raw, str):
-        raise ValueError("key map must be text")
     text = raw.strip()
     if not text or len(text) > _MAX_KEYS_JSON_CHARS:
         raise ValueError("key map has invalid size")
@@ -189,8 +187,20 @@ def require_agent_identity(request: Request) -> str:
             status_code=401,
             detail="API authentication is not configured for this service.",
         )
+    try:
+        provided_bytes = provided.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key.",
+        ) from None
     for stored_key, agent_id in key_map.items():
-        if hmac.compare_digest(provided.encode("utf-8"), stored_key.encode("utf-8")):
+        try:
+            candidate = stored_key.encode("utf-8")
+        except UnicodeEncodeError:
+            # Misconfigured key that can never match — fail closed.
+            continue
+        if hmac.compare_digest(provided_bytes, candidate):
             return agent_id
     raise HTTPException(
         status_code=401,
