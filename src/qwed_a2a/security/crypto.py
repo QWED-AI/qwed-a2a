@@ -520,18 +520,23 @@ class A2ACryptoService:
             # replay would re-open. Missing or non-numeric ttl_seconds
             # is not a softer case — it is unverifiable retention.
             registry_ttl = getattr(jti_registry, "ttl_seconds", None)
-            if (
-                isinstance(registry_ttl, bool)
-                or not isinstance(registry_ttl, (int, float))
-                or not isfinite(registry_ttl)
-                or registry_ttl < validity_seconds
-            ):
+            # One gate for every bad shape: missing/non-numeric caught by
+            # TypeError inside isfinite, non-finite by its False, short by
+            # the comparison — including oversized ints, whose float
+            # conversion overflows instead of comparing.
+            try:
+                ttl_ok = isfinite(registry_ttl) and registry_ttl >= validity_seconds
+            except (TypeError, OverflowError):
+                ttl_ok = False
+            if not ttl_ok:
+                # NOTE: the offending value is deliberately NOT interpolated
+                # — repr() of a gigantic int itself raises (int/str digit
+                # limit); the type name is always safe to render.
                 raise ValueError(
-                    "Injected replay registry reports "
-                    f"ttl_seconds={registry_ttl!r}; a numeric window of at "
-                    f"least the token validity ({validity_seconds}s) is "
-                    "required — shorter retention re-opens replay of live "
-                    "tokens."
+                    "Injected replay registry must report a finite numeric "
+                    "ttl_seconds covering the token validity "
+                    f"({validity_seconds}s); got "
+                    f"{type(registry_ttl).__name__}."
                 )
             self._jti_registry = jti_registry
         else:
@@ -820,10 +825,11 @@ class A2ACryptoService:
             return None, "expired"
         except jwt.InvalidTokenError:
             return None, "invalid"
-        except TypeError:
+        except (TypeError, OverflowError):
             # Malformed claim types PyJWT rejects outside InvalidTokenError
-            # (e.g. exp=None) must read as invalid tokens, never propagate
-            # as unhandled exceptions out of verification.
+            # (exp=None, or non-finite exp like inf that int() cannot
+            # convert) must read as invalid tokens, never propagate as
+            # unhandled exceptions out of verification.
             return None, "invalid"
 
     def _attempt_candidate(

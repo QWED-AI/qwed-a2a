@@ -444,22 +444,24 @@ class TestReplayPrevention:
                 return 0
 
         fake = _NoTtlRegistry()
+        pem = _generate_test_pem()
         with pytest.raises(ValueError, match="ttl_seconds"):
             A2ACryptoService(
                 issuer_id="did:qwed:a2a:nottl",
-                pem_key=_generate_test_pem(),
+                pem_key=pem,
                 jti_registry=fake,
             )
 
     def test_non_finite_or_bool_ttl_rejected(self):
-        """NaN/inf/bool retention windows are refused: NaN never evicts
-        (unbounded growth), inf/bool are not usable expiration math."""
+        """NaN/inf/bool/oversized-int retention windows are refused: NaN
+        never evicts (unbounded growth), oversized ints overflow float
+        conversion instead of comparing."""
         import pytest
 
         from qwed_a2a.security.crypto import JtiRegistry
 
         pem = _generate_test_pem()
-        for bad_ttl in (float("nan"), float("inf"), True):
+        for bad_ttl in (float("nan"), float("inf"), True, 10**10000):
             bad_registry = JtiRegistry(ttl_seconds=bad_ttl)
             with pytest.raises(ValueError, match="ttl_seconds"):
                 A2ACryptoService(
@@ -629,6 +631,51 @@ class TestReplayPrevention:
         ok, _, err = verifier.verify_attestation(token, ctx)
         assert ok, err
         assert shared._seen["t-strexp"] == 4102444800
+
+    def test_infinite_exp_reads_invalid_not_crash(self):
+        """exp=inf (valid signature) denies as invalid: PyJWT's int()
+        coercion raises OverflowError, which must not propagate."""
+        import jwt as pyjwt
+        import qwed_a2a.security.crypto as crypto_mod
+
+        pem_a = _generate_test_pem()
+        issuer = A2ACryptoService(issuer_id="did:qwed:a2a:alpha", pem_key=pem_a)
+        peer = A2ACryptoService(
+            issuer_id="did:qwed:a2a:peer-beta", pem_key=_generate_test_pem()
+        )
+        body = {
+            "iss": issuer.issuer_id,
+            "sub": A2ACryptoService.payload_hash({"data": "infexp"}),
+            "iat": 1700000000,
+            "exp": float("inf"),
+            "jti": "t-infexp",
+            "qwed_a2a": {
+                "version": "1.0",
+                "verdict": "forwarded",
+                "engine": "e",
+                "sender": "a1",
+                "receiver": "b1",
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "session_id": None,
+            },
+        }
+        token = pyjwt.encode(
+            body,
+            issuer._ensure_key_pair().private_key_pem,
+            algorithm="ES256",
+            headers={"kid": issuer.get_public_key_jwk()["kid"]},
+        )
+        ctx = AttestationContext(
+            sender_agent_id="a1", receiver_agent_id="b1", payload={"data": "infexp"}
+        )
+        entry = {
+            issuer.issuer_id: {
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "jwks": {"keys": [issuer.get_public_key_jwk()]},
+            }
+        }
+        ok, _, _ = peer.verify_attestation(token, ctx, trusted_issuers=entry)
+        assert not ok
 
     def test_shared_registry_blocks_cross_worker_replay(self):
         """#85: an injected shared consumption registry closes the
