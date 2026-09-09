@@ -71,12 +71,14 @@ def configure_interceptor(config: InterceptorConfig) -> None:
         _interceptor = new_interceptor
 
 
-# Monotonic timestamp of the last key-misconfiguration warning.
-# Misconfiguration warnings must be loud (the endpoint denies everything
-# until keys are configured) but must not become a log-spam vector under
-# unauthenticated scanning — or flap forever when two broken configs
-# alternate. At most one warning per minute, whatever the sequence.
-_API_KEYS_LAST_WARN: float = 0.0
+# Monotonic timestamp of the last key-misconfiguration warning (None =
+# never warned). Misconfiguration warnings must be loud (the endpoint
+# denies everything until keys are configured) but must not become a
+# log-spam vector under unauthenticated scanning — or flap forever when
+# two broken configs alternate. At most one warning per minute, whatever
+# the sequence; the first misconfiguration always warns, even on a
+# freshly booted host with a small monotonic clock.
+_API_KEYS_LAST_WARN: float | None = None
 _API_KEYS_WARN_INTERVAL = 60.0
 
 
@@ -84,7 +86,10 @@ def _warn_api_keys_misconfigured(message: str) -> None:
     """Log a key-config problem, rate-limited to one per minute."""
     global _API_KEYS_LAST_WARN
     now = time.monotonic()
-    if now - _API_KEYS_LAST_WARN >= _API_KEYS_WARN_INTERVAL:
+    if (
+        _API_KEYS_LAST_WARN is None
+        or now - _API_KEYS_LAST_WARN >= _API_KEYS_WARN_INTERVAL
+    ):
         _API_KEYS_LAST_WARN = now
         logger.warning(message)
 

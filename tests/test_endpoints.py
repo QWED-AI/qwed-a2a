@@ -430,6 +430,19 @@ class TestInterceptAuth:
         )
         assert resp.status_code == 401
 
+    def test_first_misconfig_warns_on_fresh_boot(self, monkeypatch, caplog):
+        """A fresh host (monotonic clock below the interval) still logs
+        the first misconfiguration instead of denying silently."""
+        import logging
+        import time as time_mod
+
+        monkeypatch.setattr(time_mod, "monotonic", lambda: 5.0)
+        monkeypatch.setattr(ep, "_API_KEYS_LAST_WARN", None)
+        monkeypatch.delenv("QWED_A2A_API_KEYS", raising=False)
+        with caplog.at_level(logging.WARNING):
+            ep._load_api_keys()
+        assert any("denies all" in r.getMessage() for r in caplog.records)
+
     def test_misconfig_warning_rate_limited(self, client, monkeypatch, caplog):
         """Alternating broken configs warn at most once per minute."""
         import logging
@@ -437,7 +450,7 @@ class TestInterceptAuth:
 
         now = [1000.0]
         monkeypatch.setattr(time_mod, "monotonic", lambda: now[0])
-        monkeypatch.setattr(ep, "_API_KEYS_LAST_WARN", 0.0)
+        monkeypatch.setattr(ep, "_API_KEYS_LAST_WARN", None)
         with caplog.at_level(logging.WARNING):
             monkeypatch.delenv("QWED_A2A_API_KEYS", raising=False)
             ep._load_api_keys()
