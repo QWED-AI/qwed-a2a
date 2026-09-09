@@ -423,12 +423,31 @@ class TestReplayPrevention:
 
         pem = _generate_test_pem()
         registry = JtiRegistry(ttl_seconds=1)
-        with pytest.raises(ValueError, match="shorter than the token validity"):
+        with pytest.raises(ValueError, match="ttl_seconds"):
             A2ACryptoService(
                 issuer_id="did:qwed:a2a:short",
                 validity_seconds=300,
                 pem_key=pem,
                 jti_registry=registry,
+            )
+
+    def test_registry_without_ttl_rejected(self):
+        """A registry that does not report retention is unverifiable:
+        refused rather than trusted to retain live entries."""
+        import pytest
+
+        class _NoTtlRegistry:
+            def check_and_register(self, jti, now=None, *, valid_until=None):
+                return True
+
+            def __len__(self):
+                return 0
+
+        with pytest.raises(ValueError, match="ttl_seconds"):
+            A2ACryptoService(
+                issuer_id="did:qwed:a2a:nottl",
+                pem_key=_generate_test_pem(),
+                jti_registry=_NoTtlRegistry(),
             )
 
     def test_retention_follows_token_expiry(self):
@@ -537,6 +556,52 @@ class TestReplayPrevention:
         }
         ok, _, _ = peer.verify_attestation(token, ctx, trusted_issuers=entry)
         assert not ok
+
+    def test_string_exp_coerced_and_retained(self):
+        """exp='4102444800' verifies (PyJWT integer-coercible) with the
+        coerced int driving retention — never a comparison crash."""
+        import jwt as pyjwt
+        import qwed_a2a.security.crypto as crypto_mod
+        from qwed_a2a.security.crypto import JtiRegistry
+
+        pem_a = _generate_test_pem()
+        issuer = A2ACryptoService(issuer_id="did:qwed:a2a:alpha", pem_key=pem_a)
+        shared = JtiRegistry(ttl_seconds=300)
+        verifier = A2ACryptoService(
+            issuer_id="did:qwed:a2a:alpha",
+            pem_key=pem_a,
+            jti_registry=shared,
+        )
+        verifier._key_pair = issuer._ensure_key_pair()
+
+        body = {
+            "iss": issuer.issuer_id,
+            "sub": A2ACryptoService.payload_hash({"data": "strexp"}),
+            "iat": 1700000000,
+            "exp": "4102444800",
+            "jti": "t-strexp",
+            "qwed_a2a": {
+                "version": "1.0",
+                "verdict": "forwarded",
+                "engine": "e",
+                "sender": "a1",
+                "receiver": "b1",
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "session_id": None,
+            },
+        }
+        token = pyjwt.encode(
+            body,
+            issuer._key_pair.private_key_pem,
+            algorithm="ES256",
+            headers={"kid": issuer.get_public_key_jwk()["kid"]},
+        )
+        ctx = AttestationContext(
+            sender_agent_id="a1", receiver_agent_id="b1", payload={"data": "strexp"}
+        )
+        ok, _, err = verifier.verify_attestation(token, ctx)
+        assert ok, err
+        assert shared._seen["t-strexp"] == 4102444800
 
     def test_shared_registry_blocks_cross_worker_replay(self):
         """#85: an injected shared consumption registry closes the

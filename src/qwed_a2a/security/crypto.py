@@ -239,6 +239,12 @@ class _AttestationEnvelope(BaseModel):
     iss: StrictStr
     sub: StrictStr
     jti: StrictStr
+    # NumericDate per RFC 7519 §2. Lax union mirrors PyJWT's own
+    # integer-coercible handling (it accepts int("4102444800")), while
+    # guaranteeing downstream code only ever sees numbers — a string exp
+    # must never reach retention arithmetic as a TypeError crash.
+    iat: int | float
+    exp: int | float
 
 
 @dataclass
@@ -507,17 +513,21 @@ class A2ACryptoService:
         # TTL is aligned with the validity window so entries are never
         # held longer than the tokens they protect against.
         if jti_registry is not None:
-            # Fail fast on registries that forget consumed jtis while
-            # their tokens are still alive — early eviction re-opens
-            # replay. Registries not reporting a window are accepted on
-            # the documented contract (retention >= token lifetime).
+            # Fail fast on registries that cannot guarantee retention:
+            # without a numeric window covering token lifetime, entries
+            # could be evicted while their tokens are still alive and
+            # replay would re-open. Missing or non-numeric ttl_seconds
+            # is not a softer case — it is unverifiable retention.
             registry_ttl = getattr(jti_registry, "ttl_seconds", None)
-            if registry_ttl is not None and registry_ttl < validity_seconds:
+            if not isinstance(registry_ttl, (int, float)) or (
+                registry_ttl < validity_seconds
+            ):
                 raise ValueError(
-                    "Injected replay registry retention "
-                    f"({registry_ttl}s) is shorter than the token validity "
-                    f"window ({validity_seconds}s); live tokens would become "
-                    "replayable after early eviction."
+                    "Injected replay registry reports "
+                    f"ttl_seconds={registry_ttl!r}; a numeric window of at "
+                    f"least the token validity ({validity_seconds}s) is "
+                    "required — shorter retention re-opens replay of live "
+                    "tokens."
                 )
             self._jti_registry = jti_registry
         else:
@@ -814,29 +824,30 @@ class A2ACryptoService:
         owner_iss: str,
         key: bytes | str,
         expected_kid: str | None,
-    ) -> tuple[str, dict[str, Any] | None]:
-        """Try one candidate key; return (status, claims-or-None).
+    ) -> tuple[str, dict[str, Any] | None, _AttestationEnvelope | None]:
+        """Try one candidate key; return (status, claims, envelope-or-None).
 
         Statuses: "verified" (signature verified AND iss/kid bound to this
-        key's owner), "kid-mismatch" (verified but the token's kid is not
-        this key's registered kid — later candidates may still match, so
-        callers keep trying), "expired", "no-match".
+        key's owner — claims AND typed envelope returned), "kid-mismatch"
+        (verified but the token's kid is not this key's registered kid —
+        later candidates may still match, so callers keep trying),
+        "expired", "no-match".
         """
         complete, error = self._try_candidate_key(token, key)
         if complete is None:
-            return ("expired" if error == "expired" else "no-match"), None
+            return ("expired" if error == "expired" else "no-match"), None, None
         raw_claims = complete.get("payload")
         if not isinstance(raw_claims, dict):
-            return "no-match", None
+            return "no-match", None, None
         try:
             envelope = _AttestationEnvelope.model_validate(raw_claims)
         except ValidationError:
-            return "no-match", None
+            return "no-match", None, None
         # Ownership binding: the verified iss must be the verifying key's
         # owner — a token signed by one issuer never verifies under another
         # issuer's entry, even if keys collide.
         if envelope.iss != owner_iss:
-            return "no-match", None
+            return "no-match", None, None
         header = complete.get("header")
         header = header if isinstance(header, dict) else {}
         # kid binding, checked post-verification: a token carrying a kid
@@ -849,21 +860,23 @@ class A2ACryptoService:
         # (pre-#84 routing denied this too — fail closed on ambiguity).
         token_kid = header.get("kid")
         if token_kid is not None and token_kid != expected_kid:
-            return "kid-mismatch", None
-        return "verified", raw_claims
+            return "kid-mismatch", None, None
+        return "verified", raw_claims, envelope
 
     def _check_verified_claims(
         self,
         raw_claims: dict[str, Any],
         expected_deployment_id: str | None,
         context: AttestationContext,
+        envelope: _AttestationEnvelope,
     ) -> tuple[bool, dict[str, Any] | None, str | None]:
         """Steps 4-7 on claims whose signature already verified.
 
         Structural validation of the ``qwed_a2a`` block, deployment match,
         context binding (sender/receiver/payload hash/session), then the
         jti replay check — last so out-of-context tokens never pollute
-        the registry.
+        the registry. ``envelope`` carries the strictly-typed top-level
+        claims; only typed values reach trust decisions and retention.
         """
         # Step 4: structural validation of the qwed_a2a nested claim block.
         try:
@@ -903,7 +916,7 @@ class A2ACryptoService:
             )
 
         expected_hash = self.payload_hash(context.payload)
-        if raw_claims.get("sub") != expected_hash:
+        if envelope.sub != expected_hash:
             return (
                 False,
                 None,
@@ -927,19 +940,18 @@ class A2ACryptoService:
         # pollute the registry with out-of-context tokens. The jti is
         # namespaced by issuer for peer tokens: two issuers legitimately
         # reusing the same jti (e.g. a trace ID) must not shadow each
-        # other. Self-issued tokens keep the bare jti (unchanged
-        # semantics — see issue #85 for own-token re-verification).
-        # iss/jti types are guaranteed str here: _attempt_candidate validates
-        # the envelope before binding, so no unvalidated type reaches this
-        # registry key. The truthiness check still rejects empty strings.
-        jti = raw_claims.get("jti")
+        # other. Self-issued tokens keep the bare jti (same-instance
+        # self-verification works — issuance no longer consumes a slot).
+        # Typed envelope values only: no raw-dict type can reach the
+        # registry key or retention arithmetic. Empty strings still deny.
+        jti = envelope.jti
         if not jti:
             return False, None, "Missing jti claim"
-        iss = raw_claims.get("iss")
+        iss = envelope.iss
         registry_key = f"{iss}\0{jti}" if iss != self.issuer_id else jti
 
         if not self._jti_registry.check_and_register(
-            registry_key, valid_until=raw_claims.get("exp")
+            registry_key, valid_until=envelope.exp
         ):
             return False, None, "Replay detected: jti already seen"
 
@@ -996,7 +1008,7 @@ class A2ACryptoService:
         expired_seen = False
         kid_mismatch_seen = False
         for owner_iss, key, expected_dep, expected_kid in candidates:
-            status, raw_claims = self._attempt_candidate(
+            status, raw_claims, envelope = self._attempt_candidate(
                 token, owner_iss, key, expected_kid
             )
             if status == "expired":
@@ -1007,7 +1019,9 @@ class A2ACryptoService:
                 # rather than letting JWKS order decide accept/deny.
                 kid_mismatch_seen = True
             elif status == "verified":
-                return self._check_verified_claims(raw_claims, expected_dep, context)
+                return self._check_verified_claims(
+                    raw_claims, expected_dep, context, envelope
+                )
         if expired_seen:
             return False, None, "Attestation has expired"
         if kid_mismatch_seen:
