@@ -1,0 +1,19 @@
+# QWED Security repository policy.
+#
+# Maintainer-approved suppressions (base-branch config — trusted per #9:
+# inline qwed-ignore cannot suppress findings on lines a change introduces,
+# base-branch config suppressions ARE the maintainer approval mechanism).
+# NOTE: for PR scans the policy loads from the BASE branch SHA, so entries
+# added here take effect on the NEXT PR after merge, not the PR adding them.
+#
+# hardcoded-secret in src/qwed_a2a/security/crypto.py is a false positive:
+# the rule fires on any assignment pairing a sensitive-looking name with a
+# long spaceless quoted value, with no entropy check. This crypto module
+# legitimately holds two such constants:
+#   - the TOKEN_TYPE constant, a JWT typ header type tag, not a credential.
+#   - the key_id f-string template (an identifier format, not key material).
+# Backstops remain: entropy_scan and taint_analysis still run unscoped on
+# this file, so a real committed credential (high-entropy literal, private
+# key block, env-to-sink flow) still blocks.
+suppressions:
+  - pattern=hardcoded-secret path=src/qwed_a2a/security/crypto.py reason=false-positive
