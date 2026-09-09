@@ -10,6 +10,7 @@ Provides ECDSA P-256 JWT attestation signing and verification with:
 import base64
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -18,6 +19,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
+
+logger = logging.getLogger("qwed_a2a")
 
 try:
     import jwt
@@ -163,6 +166,115 @@ class AttestationContext:
     receiver_agent_id: str
     payload: Any
     session_id: str | None = None
+
+
+# Monotonic timestamp of the last trusted-issuer misconfiguration
+# warning. Same rationale as the API-key equivalent: loud once per
+# minute, never a log-spam vector.
+_TRUSTED_ISSUERS_LAST_WARN: float | None = None
+_TRUSTED_ISSUERS_WARN_INTERVAL = 60.0
+
+
+def _warn_issuers_misconfigured(message: str) -> None:
+    """Log a trusted-issuer config problem, rate-limited to one per minute."""
+    global _TRUSTED_ISSUERS_LAST_WARN
+    now = time.monotonic()
+    if (
+        _TRUSTED_ISSUERS_LAST_WARN is None
+        or now - _TRUSTED_ISSUERS_LAST_WARN >= _TRUSTED_ISSUERS_WARN_INTERVAL
+    ):
+        _TRUSTED_ISSUERS_LAST_WARN = now
+        logger.warning(message)
+
+
+def _jwk_to_public_pem(jwk: Any) -> str | None:
+    """Convert an EC P-256 JWK to a PEM public key for verification.
+
+    Accepts exactly the shape ``get_public_key_jwk()`` emits so operators
+    can copy a peer's ``/.well-known/jwks.json`` entry verbatim. Returns
+    None for anything else — callers fail closed.
+    """
+    try:
+        if not HAS_CRYPTO or not isinstance(jwk, dict):
+            return None
+        if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256":
+            return None
+        x_b64 = jwk.get("x")
+        y_b64 = jwk.get("y")
+        if not isinstance(x_b64, str) or not isinstance(y_b64, str):
+            return None
+
+        def _b64url_uint(s: str) -> int:
+            padded = s + "=" * (-len(s) % 4)
+            return int.from_bytes(base64.urlsafe_b64decode(padded), "big")
+
+        numbers = ec.EllipticCurvePublicNumbers(
+            _b64url_uint(x_b64), _b64url_uint(y_b64), ec.SECP256R1()
+        )
+        public_key = numbers.public_key()
+        return public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+    except Exception:
+        return None
+
+
+def _load_trusted_issuers(explicit: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Resolve the trusted-issuer set for peer attestation verification.
+
+    Explicit ``trusted_issuers`` wins; when None, ``QWED_A2A_TRUSTED_ISSUERS``
+    is read fresh (rotation without restart). Shape per issuer::
+
+        {"deployment_id": "<peer deployment>", "jwks": {"keys": [{...JWK...}]}}
+
+    Entries missing a usable deployment ID or usable keys are dropped —
+    their issuer then fails closed as unknown. Malformed config warns
+    and yields an empty set (local-only verification, unchanged default).
+    """
+    raw: Any = explicit
+    if raw is None:
+        env_raw = os.environ.get("QWED_A2A_TRUSTED_ISSUERS", "")
+        if not env_raw.strip():
+            return {}
+        try:
+            raw = json.loads(env_raw)
+        except (ValueError, RecursionError):
+            _warn_issuers_misconfigured(
+                "QWED_A2A_TRUSTED_ISSUERS is not valid JSON; peer "
+                "attestation verification stays local-only until fixed."
+            )
+            return {}
+    if not isinstance(raw, dict):
+        _warn_issuers_misconfigured(
+            "QWED_A2A_TRUSTED_ISSUERS must be a JSON object mapping issuer "
+            "IDs to {deployment_id, jwks}; peer verification stays "
+            "local-only until fixed."
+        )
+        return {}
+    issuers: dict[str, dict[str, Any]] = {}
+    for issuer_id, entry in raw.items():
+        if not isinstance(issuer_id, str) or not issuer_id:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        deployment_id = entry.get("deployment_id")
+        jwks = entry.get("jwks")
+        if not isinstance(deployment_id, str) or not deployment_id:
+            continue
+        keys = jwks.get("keys") if isinstance(jwks, dict) else None
+        if not isinstance(keys, list) or not keys:
+            continue
+        usable = [k for k in keys if _jwk_to_public_pem(k) is not None]
+        if not usable:
+            continue
+        issuers[issuer_id] = {"deployment_id": deployment_id, "keys": usable}
+    if not issuers and raw:
+        _warn_issuers_misconfigured(
+            "QWED_A2A_TRUSTED_ISSUERS contains no usable issuer entries; "
+            "peer attestation verification stays local-only until fixed."
+        )
+    return issuers
 
 
 class A2ACryptoService:
@@ -362,33 +474,97 @@ class A2ACryptoService:
 
         return token
 
+    @staticmethod
+    def _select_peer_key(keys: list[dict[str, Any]], token_kid: Any) -> str | None:
+        """Select a peer verification key by kid (None when unusable).
+
+        A token ``kid`` must match a registered key exactly; a token
+        without ``kid`` verifies only against a single-key entry (never
+        an ambiguous pick among several).
+        """
+        if token_kid is not None:
+            for candidate in keys:
+                if isinstance(candidate, dict) and candidate.get("kid") == token_kid:
+                    return _jwk_to_public_pem(candidate)
+            return None
+        if len(keys) == 1:
+            return _jwk_to_public_pem(keys[0])
+        return None
+
     def verify_attestation(
-        self, token: str, context: AttestationContext
+        self,
+        token: str,
+        context: AttestationContext,
+        trusted_issuers: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any] | None, str | None]:
         """
         Verify a JWT attestation token against the current request context.
 
         Verification steps (all must pass):
+        0. Issuer-key resolution (#84) — the token's ``iss`` selects the
+           verification key: this service's own key for self-issued
+           tokens, a registered peer key for trusted issuers, rejection
+           for unknown issuers. Header/payload are decoded unverified
+           ONLY for this routing; nothing is trusted until the signature
+           check against the resolved key succeeds.
         1. Cryptographic signature check (ES256 / ECDSA P-256)
         2. Expiry check (exp claim)
         3. Required claims check (iss, sub, iat, exp, jti)
         4. Structural validation of the qwed_a2a nested claim block
-        5. Deployment context check — deployment_id must match this instance
+        5. Deployment context check — deployment_id must match this
+           instance for self-issued tokens, or the registered deployment
+           ID of the trusted peer issuer
         6. Context binding — sender, receiver, payload hash, and session
            (if provided) all matched against the AttestationContext
         7. jti replay check — rejects previously seen jti values
+
+        ``trusted_issuers`` maps issuer IDs to
+        ``{"deployment_id": ..., "jwks": {"keys": [...]}}`` (the JWKS shape
+        ``get_public_key_jwk()`` emits — copy a peer's
+        ``/.well-known/jwks.json`` entry verbatim). When None,
+        ``QWED_A2A_TRUSTED_ISSUERS`` is read instead; when both are absent
+        only self-issued tokens verify (unchanged default).
 
         Returns:
             Tuple of (is_valid, decoded_claims, error_message).
             ``True`` means the token is cryptographically valid AND bound to
             the provided context — not just that the signature is valid.
         """
-        key_pair = self._ensure_key_pair()
+        if not HAS_CRYPTO:
+            return False, None, "Cryptography backend unavailable"
+        try:
+            header = jwt.get_unverified_header(token)
+            token_kid = header.get("kid") if isinstance(header, dict) else None
+        except jwt.InvalidTokenError as exc:
+            return False, None, f"Invalid token: {exc}"
+        try:
+            unverified = jwt.decode(token, options={"verify_signature": False})
+        except jwt.InvalidTokenError as exc:
+            return False, None, f"Invalid token: {exc}"
+        token_iss = unverified.get("iss") if isinstance(unverified, dict) else None
+
+        expected_deployment_id = _DEPLOYMENT_ID
+        if token_iss == self.issuer_id:
+            verification_key = self._ensure_key_pair().public_key_pem
+        else:
+            issuers = _load_trusted_issuers(trusted_issuers)
+            entry = issuers.get(token_iss) if isinstance(token_iss, str) else None
+            if entry is None:
+                return (
+                    False,
+                    None,
+                    "Unknown issuer: token is not from this deployment "
+                    "or a trusted peer",
+                )
+            verification_key = self._select_peer_key(entry["keys"], token_kid)
+            if verification_key is None:
+                return False, None, "No usable key for trusted issuer"
+            expected_deployment_id = entry["deployment_id"]
 
         try:
             raw_claims = jwt.decode(
                 token,
-                key_pair.public_key_pem,
+                verification_key,
                 algorithms=[self.ALGORITHM],
                 options={"require": ["iss", "sub", "iat", "exp", "jti"]},
             )
@@ -403,8 +579,10 @@ class A2ACryptoService:
         except ValidationError:
             return False, None, "Invalid qwed_a2a claims structure"
 
-        # Step 5: deployment context check
-        if qwed_claims.deployment_id != _DEPLOYMENT_ID:
+        # Step 5: deployment context check — the deployment bound at
+        # issuance must match this instance (self-issued) or the
+        # registered deployment of the trusted peer issuer.
+        if qwed_claims.deployment_id != expected_deployment_id:
             return (
                 False,
                 None,

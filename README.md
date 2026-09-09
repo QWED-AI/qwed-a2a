@@ -284,6 +284,26 @@ The signing key is also fail-closed: if `QWED_A2A_SIGNING_KEY_PEM` is not set,
 the first call to sign an attestation raises `RuntimeError` rather than silently
 falling back to an ephemeral key.
 
+### Cross-deployment verification (trusted issuers)
+
+By default an attestation verifies only against the issuing deployment's own
+key — a token from another deployment fails closed as an unknown issuer, so
+sharing one private key across deployments (which would let any agent mint
+attestations as any other) is never required and never works.
+
+To verify peer attestations, register each trusted issuer with its deployment
+ID and JWKS — copy the entry verbatim from the peer's
+`/.well-known/jwks.json`:
+
+```bash
+QWED_A2A_TRUSTED_ISSUERS='{"did:qwed:a2a:peer": {"deployment_id": "peer-deploy", "jwks": {"keys": [<peer JWK>]}}}'
+```
+
+`verify_attestation(token, context)` then accepts the peer's tokens (matched
+by `kid`; unknown issuers, unknown kids, and deployment mismatches fail
+closed), or pass an explicit `trusted_issuers` mapping instead of the env
+var. Key rotation takes effect without a restart.
+
 ---
 
 ## 🚀 FastAPI Gateway
