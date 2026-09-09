@@ -288,11 +288,12 @@ def _sanitize_issuer_config_json(value: str) -> str:
     """Validate trusted-issuer env JSON before it reaches ``json.loads``.
 
     Size-capped, must be a JSON object, and must not smuggle control
-    characters. Raises ValueError on violation — callers warn and fall
-    back to local-only verification (fail closed, never parse junk).
+    characters. Raises TypeError for non-text input, ValueError for
+    malformed text — callers warn and fall back to local-only
+    verification (fail closed, never parse junk).
     """
     if not isinstance(value, str):
-        raise ValueError("Trusted-issuer config must be text")
+        raise TypeError("Trusted-issuer config must be text")
     text = value.strip()
     if len(text.encode("utf-8")) > _ISSUER_CONFIG_MAX_BYTES:
         raise ValueError("Trusted-issuer config exceeds size limit")
@@ -303,19 +304,24 @@ def _sanitize_issuer_config_json(value: str) -> str:
     return text
 
 
+def _is_nonempty_str(value: Any) -> bool:
+    """True for usable config strings: present, text, and non-blank."""
+    return isinstance(value, str) and bool(value)
+
+
 def _normalize_issuer_entry(issuer_id: Any, entry: Any) -> dict[str, Any] | None:
     """Validate one trusted-issuer entry; None when unusable (fail closed).
 
-    Each usable key is converted to PEM ONCE here so verification never
-    pays the EC conversion twice (once to test usability, once to use).
+    Each usable key is converted to PEM once per load here (rather than
+    once per candidate attempt during verification).
     Returns ``{"deployment_id": ..., "keys": [{"pem": ..., "kid": ...}]}``.
     """
-    if not isinstance(issuer_id, str) or not issuer_id:
+    if not _is_nonempty_str(issuer_id):
         return None
     if not isinstance(entry, dict):
         return None
     deployment_id = entry.get("deployment_id")
-    if not isinstance(deployment_id, str) or not deployment_id:
+    if not _is_nonempty_str(deployment_id):
         return None
     jwks = entry.get("jwks")
     keys = jwks.get("keys") if isinstance(jwks, dict) else None
@@ -353,7 +359,7 @@ def _load_trusted_issuers(explicit: dict[str, Any] | None) -> dict[str, dict[str
         try:
             sanitized_raw = _sanitize_issuer_config_json(env_raw)
             raw = json.loads(sanitized_raw)
-        except (ValueError, RecursionError):
+        except (ValueError, TypeError, RecursionError):
             _warn_issuers_misconfigured(
                 "QWED_A2A_TRUSTED_ISSUERS is not valid JSON; peer "
                 "attestation verification stays local-only until fixed."
@@ -612,11 +618,15 @@ class A2ACryptoService:
                 fingerprint = self._pem_fingerprint(key["pem"])
                 owner = seen_pems.get(fingerprint)
                 if owner is not None and owner != issuer_id:
+                    # Static message deliberately: issuer IDs flow from
+                    # operator config (env/file) and must not be interpolated
+                    # into logs (clear-text logging of config-derived data).
+                    # Operators identify the offending entry by removing
+                    # peer entries until the warning stops.
                     _warn_issuers_misconfigured(
-                        "Trusted-issuer entry for '%s' reuses a public key "
-                        "already registered to '%s'; the duplicate is "
-                        "skipped — one key must not verify as two issuers."
-                        % (issuer_id, owner)
+                        "Trusted-issuer configuration reuses one public key "
+                        "under two identities; the later entry is skipped — "
+                        "one key must not verify as two issuers."
                     )
                     continue
                 seen_pems.setdefault(fingerprint, issuer_id)

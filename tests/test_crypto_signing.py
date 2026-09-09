@@ -1130,6 +1130,8 @@ class TestPeerIssuerVerification:
             _sanitize_issuer_config_json('{"a": "b\x01c"}')
         with pytest.raises(ValueError, match="must be a JSON object"):
             _sanitize_issuer_config_json("[1, 2, 3]")
+        with pytest.raises(TypeError, match="must be text"):
+            _sanitize_issuer_config_json(None)
         assert _sanitize_issuer_config_json('{"a": 1}') == '{"a": 1}'
 
     def test_verifier_without_local_key_verifies_peer(self, service_a, monkeypatch):
