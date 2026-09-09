@@ -162,6 +162,18 @@ class TestJtiRegistry:
         registry.release("never-seen")  # must not raise
         assert len(registry) == 1
 
+    def test_eviction_reaches_behind_long_lived_head(self):
+        """Per-token lifetimes break insertion==expiry order; eviction
+        must not stop at a live head and leak expired entries behind it."""
+        registry = JtiRegistry(ttl_seconds=100)
+        now = time.time()
+        registry.check_and_register("long", now=now, valid_until=now + 3600)
+        registry.check_and_register("short", now=now)  # expires at now+100
+        # Past the short slot's expiry but before the long one's: short
+        # is evicted and re-accepted while long still denies replay.
+        assert registry.check_and_register("short", now=now + 200) is True
+        assert registry.check_and_register("long", now=now + 200) is False
+
     def test_thread_safety(self):
         """Concurrent registrations must not cause races or double-accepts.
 
@@ -409,12 +421,14 @@ class TestReplayPrevention:
 
         from qwed_a2a.security.crypto import JtiRegistry
 
+        pem = _generate_test_pem()
+        registry = JtiRegistry(ttl_seconds=1)
         with pytest.raises(ValueError, match="shorter than the token validity"):
             A2ACryptoService(
                 issuer_id="did:qwed:a2a:short",
                 validity_seconds=300,
-                pem_key=_generate_test_pem(),
-                jti_registry=JtiRegistry(ttl_seconds=1),
+                pem_key=pem,
+                jti_registry=registry,
             )
 
     def test_retention_follows_token_expiry(self):

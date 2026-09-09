@@ -95,11 +95,10 @@ class JtiRegistry:
     """
 
     def __init__(self, ttl_seconds: int = 300) -> None:
-        # OrderedDict preserves insertion order — oldest entry is first,
-        # which makes O(1) eviction possible without a heap. Values are
-        # retention EXPIRIES (epoch seconds), not insertion timestamps, so
-        # a token with a longer lifetime than the TTL keeps its replay
-        # slot until it expires.
+        # Values are retention EXPIRIES (epoch seconds), not insertion
+        # timestamps, so a token with a longer lifetime than the TTL keeps
+        # its replay slot until it expires. Insertion order therefore does
+        # NOT imply expiry order — eviction must scan everything.
         self._seen: OrderedDict[str, float] = OrderedDict()
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
@@ -153,13 +152,17 @@ class JtiRegistry:
             self._seen.pop(jti, None)
 
     def _evict(self, now: float) -> None:
-        """Remove entries whose retention expired. O(k), k = expired entries."""
-        while self._seen:
-            _, expiry = next(iter(self._seen.items()))
-            if expiry <= now:
-                self._seen.popitem(last=False)
-            else:
-                break
+        """Drop every entry whose retention expired, wherever it sits.
+
+        A front-peek loop is WRONG here: per-token lifetimes mean a
+        live long-lived head can sit ahead of expired short-lived
+        entries, which would then leak and keep denying replays. n is
+        bounded by live-token count and dwarfed by signature cost, so a
+        full scan wins over heap bookkeeping.
+        """
+        expired = [jti for jti, expiry in self._seen.items() if expiry <= now]
+        for jti in expired:
+            del self._seen[jti]
 
     def __len__(self) -> int:
         """Return the number of currently registered jti values."""
