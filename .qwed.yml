@@ -7,12 +7,11 @@
 # added here take effect on the NEXT PR after merge, not the PR adding them.
 #
 # hardcoded-secret in src/qwed_a2a/security/crypto.py is a false positive:
-# the rule fires on `var-with-keyword = "16+-char-spaceless-value"` with no
-# entropy check, and this crypto module legitimately names-keyed constants:
-#   - TOKEN_TYPE = "qwed-a2a-attestation+jwt" is a JWT `typ` header type tag,
-#     not a credential.
-#   - key_id = f"{...}#key-{...}" is a key-ID *format string* (an f-string
-#     template, not key material).
+# the rule fires on any assignment pairing a sensitive-looking name with a
+# long spaceless quoted value, with no entropy check. This crypto module
+# legitimately holds two such constants:
+#   - the TOKEN_TYPE constant, a JWT typ header type tag, not a credential.
+#   - the key_id f-string template (an identifier format, not key material).
 # Backstops remain: entropy_scan and taint_analysis still run unscoped on
 # this file, so a real committed credential (high-entropy literal, private
 # key block, env-to-sink flow) still blocks.

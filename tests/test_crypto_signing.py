@@ -861,22 +861,28 @@ class TestPeerIssuerVerification:
         assert "no trusted key verified" in (err or "")
 
     def test_wrong_kid_denied(self, service_a, service_b):
-        """Right issuer, wrong key: kid mismatch fails closed."""
+        """Right key, wrong label: kid mismatch fails closed.
+
+        Registers service_a's REAL key under a rotated label so the
+        signature verifies and the token reaches the kid-binding check
+        (registering an unrelated key would fail earlier at the
+        signature, never exercising this branch).
+        """
         import qwed_a2a.security.crypto as crypto_mod
 
-        other = A2ACryptoService(
-            issuer_id="did:qwed:a2a:other", pem_key=_generate_test_pem()
-        )
         token, ctx = self._signed(service_a, {"data": "x"}, "t-badkid")
-        other_jwk = other.get_public_key_jwk()
+        # Real key of service_a, but registered under a different kid label.
+        relabelled = service_a.get_public_key_jwk()
+        relabelled["kid"] = relabelled["kid"] + "-rotated"
         entry = {
             service_a.issuer_id: {
                 "deployment_id": crypto_mod._DEPLOYMENT_ID,
-                "jwks": {"keys": [other_jwk]},
+                "jwks": {"keys": [relabelled]},
             }
         }
         ok, _, err = service_b.verify_attestation(token, ctx, trusted_issuers=entry)
         assert not ok
+        assert "Key id mismatch" in (err or "")
 
     def test_deployment_mismatch_denied(self, service_a, service_b):
         """Peer tokens bind to the REGISTERED deployment, not ours."""
@@ -1008,6 +1014,87 @@ class TestPeerIssuerVerification:
             )
             ok, _, err = fresh_b.verify_attestation(token, ctx, trusted_issuers=entry)
             assert ok, err
+
+    def test_same_key_relabelled_verifies_regardless_of_order(self, service_b):
+        """Same key under two kid labels: JWKS order must not decide.
+
+        Rotation re-registers one key under a new kid. The token verifies
+        under the first-listed copy but mismatches its label; verification
+        must continue to the matching copy instead of denying outright.
+        """
+        import qwed_a2a.security.crypto as crypto_mod
+
+        pem_a = _generate_test_pem()
+        service_a = A2ACryptoService(issuer_id="did:qwed:a2a:alpha", pem_key=pem_a)
+        token, ctx = self._signed(service_a, {"data": "relabel"}, "t-relabel")
+        jwk_real = service_a.get_public_key_jwk()
+        jwk_rotated = service_a.get_public_key_jwk()
+        jwk_rotated["kid"] = jwk_real["kid"] + "-rotated"
+        for keys in ([jwk_rotated, jwk_real], [jwk_real, jwk_rotated]):
+            entry = {
+                service_a.issuer_id: {
+                    "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                    "jwks": {"keys": keys},
+                }
+            }
+            fresh_b = A2ACryptoService(
+                issuer_id="did:qwed:a2a:peer-beta", pem_key=_generate_test_pem()
+            )
+            ok, _, err = fresh_b.verify_attestation(token, ctx, trusted_issuers=entry)
+            assert ok, err
+
+    def test_shared_key_across_issuers_denied(self, service_a, service_b):
+        """One private key registered as two issuers cannot impersonate.
+
+        The peer entry reusing the local key is skipped (warned); a token
+        hand-minted with the shared key but claiming the peer issuer then
+        fails closed instead of verifying as the peer deployment.
+        """
+        import time
+
+        import jwt as pyjwt
+
+        peer_issuer = "did:qwed:a2a:peer-evil"
+        payload = {"data": "impersonate"}
+        payload_hash = A2ACryptoService.payload_hash(payload)
+        now = int(time.time())
+        pem_a = service_a._ensure_key_pair().private_key_pem
+        body = {
+            "iss": peer_issuer,
+            "sub": payload_hash,
+            "iat": now,
+            "exp": now + 300,
+            "jti": "t-shared-key-evil",
+            "qwed_a2a": {
+                "version": "1.0",
+                "verdict": "forwarded",
+                "engine": "e",
+                "sender": "a1",
+                "receiver": "b1",
+                "deployment_id": "peer-deploy-evil",
+                "session_id": None,
+            },
+        }
+        token = pyjwt.encode(
+            body,
+            pem_a,
+            algorithm="ES256",
+            headers={"kid": service_a.get_public_key_jwk()["kid"]},
+        )
+        ctx = AttestationContext(
+            sender_agent_id="a1", receiver_agent_id="b1", payload=payload
+        )
+        entry = {
+            peer_issuer: {
+                "deployment_id": "peer-deploy-evil",
+                "jwks": {"keys": [service_a.get_public_key_jwk()]},
+            }
+        }
+        # Verified BY service_a itself: its own key and the peer entry share
+        # one private key, so the peer candidate is skipped as a duplicate
+        # and the peer-claiming token fails closed.
+        ok, _, err = service_a.verify_attestation(token, ctx, trusted_issuers=entry)
+        assert not ok
 
     def test_env_fallback_loads_issuers(self, service_a, service_b, monkeypatch):
         """QWED_A2A_TRUSTED_ISSUERS works without an explicit argument."""

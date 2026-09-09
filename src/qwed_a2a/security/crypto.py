@@ -303,6 +303,36 @@ def _sanitize_issuer_config_json(value: str) -> str:
     return text
 
 
+def _normalize_issuer_entry(issuer_id: Any, entry: Any) -> dict[str, Any] | None:
+    """Validate one trusted-issuer entry; None when unusable (fail closed).
+
+    Each usable key is converted to PEM ONCE here so verification never
+    pays the EC conversion twice (once to test usability, once to use).
+    Returns ``{"deployment_id": ..., "keys": [{"pem": ..., "kid": ...}]}``.
+    """
+    if not isinstance(issuer_id, str) or not issuer_id:
+        return None
+    if not isinstance(entry, dict):
+        return None
+    deployment_id = entry.get("deployment_id")
+    if not isinstance(deployment_id, str) or not deployment_id:
+        return None
+    jwks = entry.get("jwks")
+    keys = jwks.get("keys") if isinstance(jwks, dict) else None
+    if not isinstance(keys, list) or not keys:
+        return None
+    usable = []
+    for key in keys:
+        pem = _jwk_to_public_pem(key)
+        if pem is None:
+            continue
+        kid = key.get("kid") if isinstance(key, dict) else None
+        usable.append({"pem": pem, "kid": kid if isinstance(kid, str) else None})
+    if not usable:
+        return None
+    return {"deployment_id": deployment_id, "keys": usable}
+
+
 def _load_trusted_issuers(explicit: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     """Resolve the trusted-issuer set for peer attestation verification.
 
@@ -338,21 +368,10 @@ def _load_trusted_issuers(explicit: dict[str, Any] | None) -> dict[str, dict[str
         return {}
     issuers: dict[str, dict[str, Any]] = {}
     for issuer_id, entry in raw.items():
-        if not isinstance(issuer_id, str) or not issuer_id:
+        normalized = _normalize_issuer_entry(issuer_id, entry)
+        if normalized is None:
             continue
-        if not isinstance(entry, dict):
-            continue
-        deployment_id = entry.get("deployment_id")
-        jwks = entry.get("jwks")
-        if not isinstance(deployment_id, str) or not deployment_id:
-            continue
-        keys = jwks.get("keys") if isinstance(jwks, dict) else None
-        if not isinstance(keys, list) or not keys:
-            continue
-        usable = [k for k in keys if _jwk_to_public_pem(k) is not None]
-        if not usable:
-            continue
-        issuers[issuer_id] = {"deployment_id": deployment_id, "keys": usable}
+        issuers[issuer_id] = normalized
     if not issuers and raw:
         _warn_issuers_misconfigured(
             "QWED_A2A_TRUSTED_ISSUERS contains no usable issuer entries; "
@@ -565,11 +584,14 @@ class A2ACryptoService:
 
         The local key comes first and only when configured — verifier-only
         nodes (no signing key) verify peer tokens without one. Peer entries
-        come from the explicit argument or ``QWED_A2A_TRUSTED_ISSUERS``.
-        Malformed JWKs are skipped; an empty result means no verification
-        is possible and callers fail closed.
+        come from the explicit argument or ``QWED_A2A_TRUSTED_ISSUERS`` (PEMs
+        pre-converted by the loader). A public key registered under more
+        than one identity is kept only for the first identity: one private
+        key must never verify as two different issuers/deployments. An
+        empty result means no verification is possible; callers fail closed.
         """
         candidates: list[tuple[str, bytes | str, str | None, str | None]] = []
+        seen_pems: dict[str, str] = {}
         try:
             own_pair = self._ensure_key_pair()
         except RuntimeError as exc:
@@ -584,23 +606,35 @@ class A2ACryptoService:
                     own_pair.key_id,
                 )
             )
+            seen_pems[self._pem_fingerprint(own_pair.public_key_pem)] = self.issuer_id
         for issuer_id, entry in _load_trusted_issuers(trusted_issuers).items():
             for key in entry["keys"]:
-                if not isinstance(key, dict):
+                fingerprint = self._pem_fingerprint(key["pem"])
+                owner = seen_pems.get(fingerprint)
+                if owner is not None and owner != issuer_id:
+                    _warn_issuers_misconfigured(
+                        "Trusted-issuer entry for '%s' reuses a public key "
+                        "already registered to '%s'; the duplicate is "
+                        "skipped — one key must not verify as two issuers."
+                        % (issuer_id, owner)
+                    )
                     continue
-                pem = _jwk_to_public_pem(key)
-                if pem is None:
-                    continue
-                kid = key.get("kid")
+                seen_pems.setdefault(fingerprint, issuer_id)
                 candidates.append(
                     (
                         issuer_id,
-                        pem,
+                        key["pem"],
                         entry["deployment_id"],
-                        kid if isinstance(kid, str) else None,
+                        key["kid"],
                     )
                 )
         return candidates
+
+    @staticmethod
+    def _pem_fingerprint(pem: bytes | str) -> str:
+        """Short stable fingerprint identifying one public key."""
+        raw = pem if isinstance(pem, bytes) else pem.encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()[:16]
 
     def _try_candidate_key(
         self, token: str, key: bytes | str
@@ -624,6 +658,46 @@ class A2ACryptoService:
             return None, "expired"
         except jwt.InvalidTokenError:
             return None, "invalid"
+
+    def _attempt_candidate(
+        self,
+        token: str,
+        owner_iss: str,
+        key: bytes | str,
+        expected_kid: str | None,
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Try one candidate key; return (status, claims-or-None).
+
+        Statuses: "verified" (signature verified AND iss/kid bound to this
+        key's owner), "kid-mismatch" (verified but the token's kid is not
+        this key's registered kid — later candidates may still match, so
+        callers keep trying), "expired", "no-match".
+        """
+        complete, error = self._try_candidate_key(token, key)
+        if complete is None:
+            return ("expired" if error == "expired" else "no-match"), None
+        raw_claims = complete.get("payload")
+        if not isinstance(raw_claims, dict):
+            return "no-match", None
+        # Ownership binding: the verified iss must be the verifying key's
+        # owner — a token signed by one issuer never verifies under another
+        # issuer's entry, even if keys collide.
+        if raw_claims.get("iss") != owner_iss:
+            return "no-match", None
+        header = complete.get("header")
+        header = header if isinstance(header, dict) else {}
+        # kid binding, checked post-verification: a token carrying a kid
+        # verifies only under a key registered with that exact kid. Tokens
+        # without kid verify under whichever key verifies the signature
+        # (order-independent) — per RFC 7515 the kid is only a hint, and
+        # with no kid there is nothing to confuse. A kid-carrying token is
+        # NOT accepted under an unlabeled key either: in a mixed entry that
+        # would let a token minted for one labeled key verify under another
+        # (pre-#84 routing denied this too — fail closed on ambiguity).
+        token_kid = header.get("kid")
+        if token_kid is not None and token_kid != expected_kid:
+            return "kid-mismatch", None
+        return "verified", raw_claims
 
     def _check_verified_claims(
         self,
@@ -762,33 +836,22 @@ class A2ACryptoService:
                 "No verification keys available (no local key, no trusted issuers)",
             )
         expired_seen = False
+        kid_mismatch_seen = False
         for owner_iss, key, expected_dep, expected_kid in candidates:
-            complete, error = self._try_candidate_key(token, key)
-            if complete is None:
-                if error == "expired":
-                    expired_seen = True
-                continue
-            raw_claims = complete.get("payload")
-            if not isinstance(raw_claims, dict):
-                continue
-            header = complete.get("header")
-            header = header if isinstance(header, dict) else {}
-            # Ownership binding: the verified iss must be the verifying
-            # key's owner — a token signed by one issuer never verifies
-            # under another issuer's entry, even if keys collide. Keep
-            # trying later candidates (the token's true owner may own
-            # one of them) rather than denying outright.
-            if raw_claims.get("iss") != owner_iss:
-                continue
-            # kid binding, checked post-verification: a token carrying a
-            # kid verifies only under a key registered with that exact
-            # kid. Tokens without kid verify under whichever key verifies
-            # the signature (order-independent) — per RFC 7515 the kid is
-            # only a hint, and with no kid there is nothing to confuse.
-            token_kid = header.get("kid")
-            if token_kid is not None and token_kid != expected_kid:
-                return False, None, "Key id mismatch for trusted issuer"
-            return self._check_verified_claims(raw_claims, expected_dep, context)
+            status, raw_claims = self._attempt_candidate(
+                token, owner_iss, key, expected_kid
+            )
+            if status == "expired":
+                expired_seen = True
+            elif status == "kid-mismatch":
+                # Same key material re-registered under a new kid (rotation)
+                # verifies here but matches a later candidate — keep trying
+                # rather than letting JWKS order decide accept/deny.
+                kid_mismatch_seen = True
+            elif status == "verified":
+                return self._check_verified_claims(raw_claims, expected_dep, context)
         if expired_seen:
             return False, None, "Attestation has expired"
+        if kid_mismatch_seen:
+            return False, None, "Key id mismatch for trusted issuer"
         return False, None, "Invalid token: no trusted key verified the signature"
