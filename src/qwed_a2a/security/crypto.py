@@ -17,7 +17,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
@@ -96,12 +96,27 @@ class JtiRegistry:
 
     def __init__(self, ttl_seconds: int = 300) -> None:
         # OrderedDict preserves insertion order — oldest entry is first,
-        # which makes O(1) eviction possible without a heap.
+        # which makes O(1) eviction possible without a heap. Values are
+        # retention EXPIRIES (epoch seconds), not insertion timestamps, so
+        # a token with a longer lifetime than the TTL keeps its replay
+        # slot until it expires.
         self._seen: OrderedDict[str, float] = OrderedDict()
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
 
-    def check_and_register(self, jti: str, now: float | None = None) -> bool:
+    @property
+    def ttl_seconds(self) -> float:
+        """Configured retention window. Consumers must retain entries at
+        least this long; shorter retention re-opens replay of live tokens."""
+        return self._ttl
+
+    def check_and_register(
+        self,
+        jti: str,
+        now: float | None = None,
+        *,
+        valid_until: float | None = None,
+    ) -> bool:
         """
         Return True and register jti if it has never been seen.
         Return False (without registering) if jti is already in the registry.
@@ -109,6 +124,11 @@ class JtiRegistry:
         Args:
             jti: The JWT ID to check.
             now: Current epoch time (injectable for testing). Defaults to time.time().
+            valid_until: Epoch expiry of the token carrying this jti. The
+                slot is retained until the LATER of TTL-expiry and the
+                token's own expiry — a token valid longer than the TTL
+                must not become replayable while still alive. Never
+                shortens retention below the TTL.
         """
         if now is None:
             now = time.time()
@@ -117,14 +137,26 @@ class JtiRegistry:
             self._evict(now)
             if jti in self._seen:
                 return False
-            self._seen[jti] = now
+            expiry = now + self._ttl
+            if valid_until is not None and valid_until > expiry:
+                expiry = valid_until
+            self._seen[jti] = expiry
             return True
 
+    def release(self, jti: str) -> None:
+        """Withdraw a reservation (e.g. signing failed after reserving).
+
+        Missing keys are a no-op — release is idempotent by design so
+        failure-path rollbacks stay unconditional.
+        """
+        with self._lock:
+            self._seen.pop(jti, None)
+
     def _evict(self, now: float) -> None:
-        """Remove entries older than TTL. Runs in O(k) where k = expired entries."""
+        """Remove entries whose retention expired. O(k), k = expired entries."""
         while self._seen:
-            _, timestamp = next(iter(self._seen.items()))
-            if now - timestamp > self._ttl:
+            _, expiry = next(iter(self._seen.items()))
+            if expiry <= now:
                 self._seen.popitem(last=False)
             else:
                 break
@@ -133,6 +165,33 @@ class JtiRegistry:
         """Return the number of currently registered jti values."""
         with self._lock:
             return len(self._seen)
+
+
+class ReplayRegistry(Protocol):
+    """Structural contract for replay registries (consumption side).
+
+    Implementations (Redis, database, shared memory) must provide:
+    - ``check_and_register`` with ATOMIC insert-if-absent semantics —
+      two workers racing on the same jti must not both be accepted.
+    - Retention covering each token's full lifetime (honor
+      ``valid_until``; never evict a live token's slot).
+    - Thread safety for in-process concurrent use.
+    - ``ttl_seconds`` reporting the retention window, so services can
+      refuse registries that expire entries while tokens are alive.
+    """
+
+    @property
+    def ttl_seconds(self) -> float: ...
+
+    def check_and_register(
+        self,
+        jti: str,
+        now: float | None = ...,
+        *,
+        valid_until: float | None = ...,
+    ) -> bool: ...
+
+    def __len__(self) -> int: ...
 
 
 # Module-level deployment ID — shared across all processes in the same
@@ -432,7 +491,7 @@ class A2ACryptoService:
         issuer_id: str = "did:qwed:a2a:local",
         validity_seconds: int = 300,
         pem_key: str | None = None,
-        jti_registry: JtiRegistry | None = None,
+        jti_registry: ReplayRegistry | None = None,
     ):
         self.issuer_id = issuer_id
         self.validity_seconds = validity_seconds
@@ -444,11 +503,22 @@ class A2ACryptoService:
         # default is process-local (see JtiRegistry scope note, #85).
         # TTL is aligned with the validity window so entries are never
         # held longer than the tokens they protect against.
-        self._jti_registry = (
-            jti_registry
-            if jti_registry is not None
-            else JtiRegistry(ttl_seconds=validity_seconds)
-        )
+        if jti_registry is not None:
+            # Fail fast on registries that forget consumed jtis while
+            # their tokens are still alive — early eviction re-opens
+            # replay. Registries not reporting a window are accepted on
+            # the documented contract (retention >= token lifetime).
+            registry_ttl = getattr(jti_registry, "ttl_seconds", None)
+            if registry_ttl is not None and registry_ttl < validity_seconds:
+                raise ValueError(
+                    "Injected replay registry retention "
+                    f"({registry_ttl}s) is shorter than the token validity "
+                    f"window ({validity_seconds}s); live tokens would become "
+                    "replayable after early eviction."
+                )
+            self._jti_registry = jti_registry
+        else:
+            self._jti_registry = JtiRegistry(ttl_seconds=validity_seconds)
         # Issuance record: trace_ids this instance has SIGNED. Deliberately
         # separate from the consumption registry — signing must never
         # consume a replay slot, or the issuer could never verify its own
@@ -596,9 +666,12 @@ class A2ACryptoService:
         Raises:
             ValueError: trace_id already issued by this instance.
         """
+        # Key first: a missing or misconfigured key must surface before the
+        # trace is reserved — otherwise the retry burns on a phantom
+        # duplicate for a token that was never minted.
+        key_pair = self._ensure_key_pair()
         if not self._issued_registry.check_and_register(trace_id):
             raise ValueError("duplicate trace_id: each attestation needs a unique jti")
-        key_pair = self._ensure_key_pair()
         now = int(time.time())
 
         payload = {
@@ -624,12 +697,20 @@ class A2ACryptoService:
             "kid": key_pair.key_id,
         }
 
-        token = jwt.encode(
-            payload,
-            key_pair.private_key_pem,
-            algorithm=self.ALGORITHM,
-            headers=header,
-        )
+        try:
+            token = jwt.encode(
+                payload,
+                key_pair.private_key_pem,
+                algorithm=self.ALGORITHM,
+                headers=header,
+            )
+        except Exception:
+            # Encoding failed after reserving: roll back so a retry with
+            # the same trace_id remains possible. (Payload/header
+            # construction above is infallible literals — encode is the
+            # only fallible step left.)
+            self._issued_registry.release(trace_id)
+            raise
 
         return token
 
@@ -717,6 +798,11 @@ class A2ACryptoService:
         except jwt.ExpiredSignatureError:
             return None, "expired"
         except jwt.InvalidTokenError:
+            return None, "invalid"
+        except TypeError:
+            # Malformed claim types PyJWT rejects outside InvalidTokenError
+            # (e.g. exp=None) must read as invalid tokens, never propagate
+            # as unhandled exceptions out of verification.
             return None, "invalid"
 
     def _attempt_candidate(
@@ -849,7 +935,9 @@ class A2ACryptoService:
         iss = raw_claims.get("iss")
         registry_key = f"{iss}\0{jti}" if iss != self.issuer_id else jti
 
-        if not self._jti_registry.check_and_register(registry_key):
+        if not self._jti_registry.check_and_register(
+            registry_key, valid_until=raw_claims.get("exp")
+        ):
             return False, None, "Replay detected: jti already seen"
 
         return True, raw_claims, None

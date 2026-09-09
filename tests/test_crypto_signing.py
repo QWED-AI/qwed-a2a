@@ -153,6 +153,15 @@ class TestJtiRegistry:
         registry.check_and_register("jti-new", now=now + 2)
         assert len(registry) == 1
 
+    def test_release_withdraws_reservation(self):
+        """Released jtis can be registered again; missing keys are a no-op."""
+        registry = JtiRegistry(ttl_seconds=300)
+        registry.check_and_register("jti-rel")
+        registry.release("jti-rel")
+        assert registry.check_and_register("jti-rel") is True
+        registry.release("never-seen")  # must not raise
+        assert len(registry) == 1
+
     def test_thread_safety(self):
         """Concurrent registrations must not cause races or double-accepts.
 
@@ -379,6 +388,141 @@ class TestReplayPrevention:
             )
         # The refused second signing consumed no replay slot either.
         assert len(crypto_service._jti_registry) == 0
+
+    def test_sign_key_failure_does_not_burn_trace(self, monkeypatch):
+        """Failed signing reserves nothing — fixing the key unblocks retry."""
+        import pytest
+
+        monkeypatch.delenv("QWED_A2A_SIGNING_KEY_PEM", raising=False)
+        svc = A2ACryptoService(issuer_id="did:qwed:a2a:retry")
+        with pytest.raises(RuntimeError, match="QWED_A2A_SIGNING_KEY_PEM"):
+            _sign(svc, trace_id="t_retry_trace")
+        # Nothing reserved: same trace works once the key is configured.
+        svc._pem_key = _generate_test_pem()
+        token = _sign(svc, trace_id="t_retry_trace")
+        ok, _, err = svc.verify_attestation(token, _default_context())
+        assert ok, err
+
+    def test_short_ttl_injected_registry_rejected(self):
+        """Registries expiring entries while tokens live are refused fast."""
+        import pytest
+
+        from qwed_a2a.security.crypto import JtiRegistry
+
+        with pytest.raises(ValueError, match="shorter than the token validity"):
+            A2ACryptoService(
+                issuer_id="did:qwed:a2a:short",
+                validity_seconds=300,
+                pem_key=_generate_test_pem(),
+                jti_registry=JtiRegistry(ttl_seconds=1),
+            )
+
+    def test_retention_follows_token_expiry(self):
+        """A token valid longer than the TTL keeps its slot past the TTL."""
+        import time
+
+        from qwed_a2a.security.crypto import JtiRegistry
+
+        registry = JtiRegistry(ttl_seconds=10)
+        now = time.time()
+        assert registry.check_and_register("t-long", now=now, valid_until=now + 3600)
+        # Past the 10s TTL the slot is still held (token lives 1h).
+        assert registry.check_and_register("t-long", now=now + 20) is False
+        # Past the token's own expiry the slot is released.
+        assert registry.check_and_register("t-long", now=now + 3700) is True
+
+    def test_consumption_slot_outlives_short_ttl(self):
+        """End to end: the stored slot expiry matches the token's exp."""
+        import time
+
+        import jwt as pyjwt
+        import qwed_a2a.security.crypto as crypto_mod
+        from qwed_a2a.security.crypto import JtiRegistry
+
+        pem_a = _generate_test_pem()
+        issuer = A2ACryptoService(issuer_id="did:qwed:a2a:alpha", pem_key=pem_a)
+        shared = JtiRegistry(ttl_seconds=300)
+        verifier = A2ACryptoService(
+            issuer_id="did:qwed:a2a:alpha",
+            pem_key=pem_a,
+            jti_registry=shared,
+        )
+        verifier._key_pair = issuer._ensure_key_pair()
+
+        now = int(time.time())
+        body = {
+            "iss": issuer.issuer_id,
+            "sub": A2ACryptoService.payload_hash({"data": "long"}),
+            "iat": now,
+            "exp": now + 3600,
+            "jti": "t-slot-long",
+            "qwed_a2a": {
+                "version": "1.0",
+                "verdict": "forwarded",
+                "engine": "e",
+                "sender": "a1",
+                "receiver": "b1",
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "session_id": None,
+            },
+        }
+        token = pyjwt.encode(
+            body,
+            issuer._key_pair.private_key_pem,
+            algorithm="ES256",
+            headers={"kid": issuer.get_public_key_jwk()["kid"]},
+        )
+        ctx = AttestationContext(
+            sender_agent_id="a1", receiver_agent_id="b1", payload={"data": "long"}
+        )
+        ok, _, err = verifier.verify_attestation(token, ctx)
+        assert ok, err
+        # Slot retained to token expiry, not registry TTL.
+        assert shared._seen["t-slot-long"] == now + 3600
+
+    def test_malformed_exp_reads_invalid_not_crash(self):
+        """exp=None (valid signature) denies as invalid, never raises."""
+        import jwt as pyjwt
+        import qwed_a2a.security.crypto as crypto_mod
+
+        pem_a = _generate_test_pem()
+        issuer = A2ACryptoService(issuer_id="did:qwed:a2a:alpha", pem_key=pem_a)
+        peer = A2ACryptoService(
+            issuer_id="did:qwed:a2a:peer-beta", pem_key=_generate_test_pem()
+        )
+        body = {
+            "iss": issuer.issuer_id,
+            "sub": A2ACryptoService.payload_hash({"data": "badexp"}),
+            "iat": 1700000000,
+            "exp": None,
+            "jti": "t-badexp",
+            "qwed_a2a": {
+                "version": "1.0",
+                "verdict": "forwarded",
+                "engine": "e",
+                "sender": "a1",
+                "receiver": "b1",
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "session_id": None,
+            },
+        }
+        token = pyjwt.encode(
+            body,
+            issuer._ensure_key_pair().private_key_pem,
+            algorithm="ES256",
+            headers={"kid": issuer.get_public_key_jwk()["kid"]},
+        )
+        ctx = AttestationContext(
+            sender_agent_id="a1", receiver_agent_id="b1", payload={"data": "badexp"}
+        )
+        entry = {
+            issuer.issuer_id: {
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "jwks": {"keys": [issuer.get_public_key_jwk()]},
+            }
+        }
+        ok, _, _ = peer.verify_attestation(token, ctx, trusted_issuers=entry)
+        assert not ok
 
     def test_shared_registry_blocks_cross_worker_replay(self):
         """#85: an injected shared consumption registry closes the

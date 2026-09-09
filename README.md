@@ -272,8 +272,8 @@ FORWARDED, BLOCKED, and HEURISTIC_PASS verdicts include a signed **ES256 JWT att
 | **Identity** | DID-based issuer (`did:qwed:a2a:local`) |
 | **Expiry** | 300 seconds (5 minutes) default — short-lived attestation token validity window |
 | **Key persistence** | Ephemeral keys replaced by `QWED_A2A_SIGNING_KEY_PEM` env var for audit continuity |
-| **Replay scope** | Process-local by default — inject a shared `JtiRegistry` via `A2ACryptoService(jti_registry=...)` for multi-worker replay protection |
-| **Trace uniqueness** | Reusing a `trace_id` raises `ValueError` at signing — each attestation needs a unique `jti` |
+| **Replay scope** | Consumption state is process-local by default — share one registry object across in-process instances, or inject an out-of-process store implementing the replay contract, for multi-worker protection; injected retention must cover token lifetime |
+| **Trace uniqueness** | Reusing a `trace_id` within its validity window raises `ValueError` at signing — each attestation needs a unique `jti` |
 
 ### Fail-Closed Attestations
 
