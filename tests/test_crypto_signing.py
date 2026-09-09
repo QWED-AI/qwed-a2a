@@ -443,12 +443,39 @@ class TestReplayPrevention:
             def __len__(self):
                 return 0
 
+        fake = _NoTtlRegistry()
         with pytest.raises(ValueError, match="ttl_seconds"):
             A2ACryptoService(
                 issuer_id="did:qwed:a2a:nottl",
                 pem_key=_generate_test_pem(),
-                jti_registry=_NoTtlRegistry(),
+                jti_registry=fake,
             )
+
+    def test_non_finite_or_bool_ttl_rejected(self):
+        """NaN/inf/bool retention windows are refused: NaN never evicts
+        (unbounded growth), inf/bool are not usable expiration math."""
+        import pytest
+
+        from qwed_a2a.security.crypto import JtiRegistry
+
+        pem = _generate_test_pem()
+        for bad_ttl in (float("nan"), float("inf"), True):
+            bad_registry = JtiRegistry(ttl_seconds=bad_ttl)
+            with pytest.raises(ValueError, match="ttl_seconds"):
+                A2ACryptoService(
+                    issuer_id="did:qwed:a2a:badttl",
+                    pem_key=pem,
+                    jti_registry=bad_registry,
+                )
+
+    def test_issuance_slot_matches_token_expiry(self, crypto_service):
+        """The issuance slot lives exactly to the token's exp — no gap
+        where a duplicate could mint while the original is still valid."""
+        import jwt as pyjwt
+
+        token = _sign(crypto_service, trace_id="t_slot_exp")
+        exp = pyjwt.decode(token, options={"verify_signature": False})["exp"]
+        assert crypto_service._issued_registry._seen["t_slot_exp"] >= exp
 
     def test_retention_follows_token_expiry(self):
         """A token valid longer than the TTL keeps its slot past the TTL."""

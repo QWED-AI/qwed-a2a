@@ -17,6 +17,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
@@ -519,8 +520,11 @@ class A2ACryptoService:
             # replay would re-open. Missing or non-numeric ttl_seconds
             # is not a softer case — it is unverifiable retention.
             registry_ttl = getattr(jti_registry, "ttl_seconds", None)
-            if not isinstance(registry_ttl, (int, float)) or (
-                registry_ttl < validity_seconds
+            if (
+                isinstance(registry_ttl, bool)
+                or not isinstance(registry_ttl, (int, float))
+                or not isfinite(registry_ttl)
+                or registry_ttl < validity_seconds
             ):
                 raise ValueError(
                     "Injected replay registry reports "
@@ -683,15 +687,19 @@ class A2ACryptoService:
         # trace is reserved — otherwise the retry burns on a phantom
         # duplicate for a token that was never minted.
         key_pair = self._ensure_key_pair()
-        if not self._issued_registry.check_and_register(trace_id):
-            raise ValueError("duplicate trace_id: each attestation needs a unique jti")
+        # Single clock source for slot and token: the issuance slot lives
+        # exactly to the token's own exp, so no stall between reserving
+        # and minting can open a window where the slot lapses first.
         now = int(time.time())
+        exp = now + self.validity_seconds
+        if not self._issued_registry.check_and_register(trace_id, valid_until=exp):
+            raise ValueError("duplicate trace_id: each attestation needs a unique jti")
 
         payload = {
             "iss": self.issuer_id,
             "sub": payload_hash,
             "iat": now,
-            "exp": now + self.validity_seconds,
+            "exp": exp,
             "jti": trace_id,
             "qwed_a2a": {
                 "version": "1.0",
