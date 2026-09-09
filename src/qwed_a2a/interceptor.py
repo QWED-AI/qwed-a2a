@@ -78,6 +78,11 @@ class A2AVerificationInterceptor:
             message: Validated AgentMessage to process.
             trace_id: Caller-provided deterministic trace ID for this intercept.
 
+        Note on identity (#83): over HTTP, the endpoint authenticates the
+        caller and overrides ``message.sender_agent_id`` before calling
+        here. Direct library callers get no such override — they own
+        identity binding and must not feed untrusted IDs.
+
         Returns:
             VerificationVerdict with status, attestation, and audit trace.
         """
