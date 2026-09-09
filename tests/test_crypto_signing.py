@@ -348,20 +348,66 @@ class TestReplayPrevention:
         assert valid_a is True
         assert valid_b is True
 
-    def test_jti_registered_on_sign_at_issuer(self, crypto_service):
-        """Issuer registers jti at signing time — not only at verify time."""
+    def test_sign_consumes_no_replay_slot_at_issuer(self, crypto_service):
+        """#85: signing records issuance only — never a consumption slot."""
         _sign(crypto_service, trace_id="t_sign_reg")
-        assert len(crypto_service._jti_registry) == 1
+        assert len(crypto_service._jti_registry) == 0
 
-    def test_issuer_rejects_replay_of_own_token(self, crypto_service):
-        """Issuer also rejects a token it already signed if asked to re-verify it."""
-        token = _sign(crypto_service, trace_id="t_self_replay")
-        # Issuer has already registered this jti at sign time
+    def test_issuer_verifies_own_token_once_then_replay(self, crypto_service):
+        """#85: the issuer CAN verify its own attestation (once)."""
+        token = _sign(crypto_service, trace_id="t_self_verify")
         is_valid, _, error = crypto_service.verify_attestation(
             token, _default_context()
         )
-        assert is_valid is False
-        assert "Replay" in error
+        assert is_valid is True, f"Self-verification failed: {error}"
+        is_valid_2, _, error_2 = crypto_service.verify_attestation(
+            token, _default_context()
+        )
+        assert is_valid_2 is False
+        assert "Replay" in error_2
+
+    def test_duplicate_trace_id_refused_at_issuance(self, crypto_service):
+        """#85: a reused trace_id raises instead of minting a twin-jti JWT."""
+        import pytest
+
+        _sign(crypto_service, trace_id="t_dup_trace")
+        with pytest.raises(ValueError, match="duplicate trace_id"):
+            _sign(
+                crypto_service,
+                trace_id="t_dup_trace",
+                verdict_status="blocked",
+            )
+        # The refused second signing consumed no replay slot either.
+        assert len(crypto_service._jti_registry) == 0
+
+    def test_shared_registry_blocks_cross_worker_replay(self):
+        """#85: an injected shared consumption registry closes the
+        cross-worker replay window — what one worker consumed, another
+        rejects."""
+        from qwed_a2a.security.crypto import JtiRegistry
+
+        pem_a = _generate_test_pem()
+        issuer = A2ACryptoService(issuer_id="did:qwed:a2a:alpha", pem_key=pem_a)
+        shared = JtiRegistry(ttl_seconds=300)
+        worker_1 = A2ACryptoService(
+            issuer_id="did:qwed:a2a:alpha",
+            pem_key=pem_a,
+            jti_registry=shared,
+        )
+        worker_1._key_pair = issuer._ensure_key_pair()
+        worker_2 = A2ACryptoService(
+            issuer_id="did:qwed:a2a:alpha",
+            pem_key=pem_a,
+            jti_registry=shared,
+        )
+        worker_2._key_pair = issuer._key_pair
+
+        token = _sign(issuer, trace_id="t_shared_replay")
+        ok_1, _, err_1 = worker_1.verify_attestation(token, _default_context())
+        assert ok_1 is True, f"First consumption failed: {err_1}"
+        ok_2, _, err_2 = worker_2.verify_attestation(token, _default_context())
+        assert ok_2 is False
+        assert "Replay" in err_2
 
     def test_expiry_error_takes_precedence_over_replay_error(self):
         """Expiry check runs BEFORE replay check — confirms correct ordering."""

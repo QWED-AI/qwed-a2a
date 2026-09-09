@@ -84,6 +84,14 @@ class JtiRegistry:
 
     The TTL mirrors the JWT validity window — a jti only needs to be
     remembered for as long as the token it belongs to could still be valid.
+
+    SCOPE: this instance is process-local. Two service instances in one
+    process each own theirs; two workers in two processes share nothing.
+    Multi-worker deployments needing cross-worker replay protection must
+    inject a shared implementation (any object with ``check_and_register``
+    and ``__len__``) via ``A2ACryptoService(jti_registry=...)`` — the
+    default documents single-process scope rather than pretending
+    otherwise (#85).
     """
 
     def __init__(self, ttl_seconds: int = 300) -> None:
@@ -411,7 +419,9 @@ class A2ACryptoService:
     - Signs verification verdicts with short-lived ES256 JWT attestations.
     - Verifies incoming agent message signatures.
     - Manages ECDSA P-256 key pairs.
-    - Enforces jti replay prevention via JtiRegistry.
+    - Enforces jti replay prevention via JtiRegistry (consumption side;
+      issuance dup-detection lives in a separate per-instance record so
+      signing never poisons verification — see #85).
     """
 
     ALGORITHM = "ES256"
@@ -422,16 +432,31 @@ class A2ACryptoService:
         issuer_id: str = "did:qwed:a2a:local",
         validity_seconds: int = 300,
         pem_key: str | None = None,
+        jti_registry: JtiRegistry | None = None,
     ):
         self.issuer_id = issuer_id
         self.validity_seconds = validity_seconds
         self._pem_key = pem_key
         self._key_pair: KeyPair | None = None
         self._key_lock = threading.Lock()
-        # Each service instance owns its replay registry.
+        # Consumption registry: records jtis this instance has VERIFIED.
+        # Shared across instances only when explicitly injected — the
+        # default is process-local (see JtiRegistry scope note, #85).
         # TTL is aligned with the validity window so entries are never
         # held longer than the tokens they protect against.
-        self._jti_registry = JtiRegistry(ttl_seconds=validity_seconds)
+        self._jti_registry = (
+            jti_registry
+            if jti_registry is not None
+            else JtiRegistry(ttl_seconds=validity_seconds)
+        )
+        # Issuance record: trace_ids this instance has SIGNED. Deliberately
+        # separate from the consumption registry — signing must never
+        # consume a replay slot, or the issuer could never verify its own
+        # tokens (#85). Always per-instance: cross-worker duplicate
+        # issuance is caller misuse (trace_ids are caller-supplied), while
+        # cross-worker duplicate CONSUMPTION is the replay attack the
+        # injectable consumption registry addresses.
+        self._issued_registry = JtiRegistry(ttl_seconds=validity_seconds)
 
     def _ensure_key_pair(self) -> KeyPair:
         if not HAS_CRYPTO:
@@ -548,7 +573,13 @@ class A2ACryptoService:
         - Valid for validity_seconds (default 300s / 5 minutes)
         - Bound to the current deployment instance via deployment_id
         - Bound to the caller-supplied session_id when provided
-        - Registered in the jti replay registry immediately upon signing
+        - Recorded in the per-instance issuance record (NOT the
+          verification replay registry — signing consumes no replay
+          slot, so the issuer can verify its own tokens)
+
+        A duplicate trace_id raises ValueError: each attestation needs a
+        unique jti (RFC 7519), and silently minting contradictory tokens
+        under one jti poisons every consumer's registry.
 
         Args:
             trace_id:       Unique trace ID (becomes jti).
@@ -561,7 +592,12 @@ class A2ACryptoService:
 
         Returns:
             Signed JWT token string.
+
+        Raises:
+            ValueError: trace_id already issued by this instance.
         """
+        if not self._issued_registry.check_and_register(trace_id):
+            raise ValueError("duplicate trace_id: each attestation needs a unique jti")
         key_pair = self._ensure_key_pair()
         now = int(time.time())
 
@@ -594,10 +630,6 @@ class A2ACryptoService:
             algorithm=self.ALGORITHM,
             headers=header,
         )
-
-        # Register jti immediately after signing so the issuing service
-        # itself rejects replay of tokens it has issued.
-        self._jti_registry.check_and_register(trace_id)
 
         return token
 
