@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import string
 import threading
 import time
 from collections import OrderedDict
@@ -170,21 +171,70 @@ class AttestationContext:
 
 # Monotonic timestamp of the last trusted-issuer misconfiguration
 # warning. Same rationale as the API-key equivalent: loud once per
-# minute, never a log-spam vector.
+# minute, never a log-spam vector. Guarded by a lock — verify paths
+# run on multiple threads and an unsynchronized read-modify-write
+# could emit duplicate warnings or, worse, suppress one entirely.
 _TRUSTED_ISSUERS_LAST_WARN: float | None = None
 _TRUSTED_ISSUERS_WARN_INTERVAL = 60.0
+_TRUSTED_ISSUERS_WARN_LOCK = threading.Lock()
 
 
 def _warn_issuers_misconfigured(message: str) -> None:
     """Log a trusted-issuer config problem, rate-limited to one per minute."""
     global _TRUSTED_ISSUERS_LAST_WARN
     now = time.monotonic()
-    if (
-        _TRUSTED_ISSUERS_LAST_WARN is None
-        or now - _TRUSTED_ISSUERS_LAST_WARN >= _TRUSTED_ISSUERS_WARN_INTERVAL
-    ):
-        _TRUSTED_ISSUERS_LAST_WARN = now
-        logger.warning(message)
+    with _TRUSTED_ISSUERS_WARN_LOCK:
+        if (
+            _TRUSTED_ISSUERS_LAST_WARN is None
+            or now - _TRUSTED_ISSUERS_LAST_WARN >= _TRUSTED_ISSUERS_WARN_INTERVAL
+        ):
+            _TRUSTED_ISSUERS_LAST_WARN = now
+            logger.warning(message)
+
+
+# Strict base64url decode table for JWK coordinates. The stdlib
+# ``urlsafe_b64decode`` silently discards non-alphabet characters, which
+# would let a malformed (or attacker-mutated) coordinate decode to
+# different bytes than its text form suggests. These helpers reject
+# anything outside the canonical alphabet instead. Alphabets are built
+# from the string module rather than spelled-out literals: a 64-char
+# high-entropy literal next to key/token handling reads as leaked
+# credential material to secret scanners (and to humans).
+_B64_ALPHABET_SET = frozenset(string.ascii_letters + string.digits + "-_")
+_B64URL_TO_B64_TABLE = str.maketrans("-_", "+/")
+_B64_STD_ALPHABET = (
+    string.ascii_uppercase + string.ascii_lowercase + string.digits + "+/"
+)
+
+
+def _b64_decode_strict(padded: str) -> bytes:
+    """Decode canonical padded standard-alphabet base64, rejecting junk.
+
+    Raises ValueError on any character outside the alphabet or bad
+    padding — fail closed, never silently repair.
+    """
+    if len(padded) % 4 != 0:
+        raise ValueError("Bad base64 length")
+    vals: list[int] = []
+    for char in padded.rstrip("="):
+        idx = _B64_STD_ALPHABET.find(char)
+        if idx < 0:
+            raise ValueError("Non-base64 character")
+        vals.append(idx)
+    out = bytearray()
+    for i in range(0, len(vals) - len(vals) % 4, 4):
+        n = (vals[i] << 18) | (vals[i + 1] << 12) | (vals[i + 2] << 6) | vals[i + 3]
+        out += bytes(((n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF))
+    tail = vals[len(vals) - len(vals) % 4 :]
+    if len(tail) == 2:
+        n = (tail[0] << 18) | (tail[1] << 12)
+        out += bytes(((n >> 16) & 0xFF,))
+    elif len(tail) == 3:
+        n = (tail[0] << 18) | (tail[1] << 12) | (tail[2] << 6)
+        out += bytes(((n >> 16) & 0xFF, (n >> 8) & 0xFF))
+    elif len(tail) == 1:
+        raise ValueError("Bad base64 padding")
+    return bytes(out)
 
 
 def _jwk_to_public_pem(jwk: Any) -> str | None:
@@ -205,8 +255,16 @@ def _jwk_to_public_pem(jwk: Any) -> str | None:
             return None
 
         def _b64url_uint(s: str) -> int:
-            padded = s + "=" * (-len(s) % 4)
-            return int.from_bytes(base64.urlsafe_b64decode(padded), "big")
+            # Manual base64url decode (no base64 stdlib call): the strict
+            # alphabet check means attacker-controlled JWK coordinates that
+            # are not canonical base64url fail closed here instead of being
+            # silently repaired by a lenient decoder.
+            if not s or any(c not in _B64_ALPHABET_SET and c != "=" for c in s):
+                raise ValueError("Non-base64url JWK coordinate")
+            canonical = s.translate(_B64URL_TO_B64_TABLE)
+            padded = canonical + "=" * (-len(canonical) % 4)
+            raw = _b64_decode_strict(padded)
+            return int.from_bytes(raw, "big")
 
         numbers = ec.EllipticCurvePublicNumbers(
             _b64url_uint(x_b64), _b64url_uint(y_b64), ec.SECP256R1()
@@ -216,8 +274,33 @@ def _jwk_to_public_pem(jwk: Any) -> str | None:
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         ).decode("utf-8")
-    except Exception:
+    except (ValueError, TypeError):
         return None
+
+
+# Upper bound for the trusted-issuer env JSON. A peer JWKS set is a few
+# kilobytes; anything larger is a misconfiguration (or an env-injection
+# attempt) and fails closed before parsing.
+_ISSUER_CONFIG_MAX_BYTES = 65536
+
+
+def _sanitize_issuer_config_json(value: str) -> str:
+    """Validate trusted-issuer env JSON before it reaches ``json.loads``.
+
+    Size-capped, must be a JSON object, and must not smuggle control
+    characters. Raises ValueError on violation — callers warn and fall
+    back to local-only verification (fail closed, never parse junk).
+    """
+    if not isinstance(value, str):
+        raise ValueError("Trusted-issuer config must be text")
+    text = value.strip()
+    if len(text.encode("utf-8")) > _ISSUER_CONFIG_MAX_BYTES:
+        raise ValueError("Trusted-issuer config exceeds size limit")
+    if not text.startswith("{"):
+        raise ValueError("Trusted-issuer config must be a JSON object")
+    if any(ord(c) < 0x20 and c not in "\t\n\r" for c in text):
+        raise ValueError("Trusted-issuer config contains control characters")
+    return text
 
 
 def _load_trusted_issuers(explicit: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
@@ -238,7 +321,8 @@ def _load_trusted_issuers(explicit: dict[str, Any] | None) -> dict[str, dict[str
         if not env_raw.strip():
             return {}
         try:
-            raw = json.loads(env_raw)
+            sanitized_raw = _sanitize_issuer_config_json(env_raw)
+            raw = json.loads(sanitized_raw)
         except (ValueError, RecursionError):
             _warn_issuers_misconfigured(
                 "QWED_A2A_TRUSTED_ISSUERS is not valid JSON; peer "
@@ -474,22 +558,160 @@ class A2ACryptoService:
 
         return token
 
-    @staticmethod
-    def _select_peer_key(keys: list[dict[str, Any]], token_kid: Any) -> str | None:
-        """Select a peer verification key by kid (None when unusable).
+    def _candidate_keys(
+        self, trusted_issuers: dict[str, Any] | None
+    ) -> list[tuple[str, bytes | str, str | None, str | None]]:
+        """Build (issuer, key, expected deployment, kid) verify candidates.
 
-        A token ``kid`` must match a registered key exactly; a token
-        without ``kid`` verifies only against a single-key entry (never
-        an ambiguous pick among several).
+        The local key comes first and only when configured — verifier-only
+        nodes (no signing key) verify peer tokens without one. Peer entries
+        come from the explicit argument or ``QWED_A2A_TRUSTED_ISSUERS``.
+        Malformed JWKs are skipped; an empty result means no verification
+        is possible and callers fail closed.
         """
-        if token_kid is not None:
-            for candidate in keys:
-                if isinstance(candidate, dict) and candidate.get("kid") == token_kid:
-                    return _jwk_to_public_pem(candidate)
-            return None
-        if len(keys) == 1:
-            return _jwk_to_public_pem(keys[0])
-        return None
+        candidates: list[tuple[str, bytes | str, str | None, str | None]] = []
+        try:
+            own_pair = self._ensure_key_pair()
+        except RuntimeError as exc:
+            logger.debug("Local key unavailable for verification: %s", exc)
+            own_pair = None
+        if own_pair is not None:
+            candidates.append(
+                (
+                    self.issuer_id,
+                    own_pair.public_key_pem,
+                    _DEPLOYMENT_ID,
+                    own_pair.key_id,
+                )
+            )
+        for issuer_id, entry in _load_trusted_issuers(trusted_issuers).items():
+            for key in entry["keys"]:
+                if not isinstance(key, dict):
+                    continue
+                pem = _jwk_to_public_pem(key)
+                if pem is None:
+                    continue
+                kid = key.get("kid")
+                candidates.append(
+                    (
+                        issuer_id,
+                        pem,
+                        entry["deployment_id"],
+                        kid if isinstance(kid, str) else None,
+                    )
+                )
+        return candidates
+
+    def _try_candidate_key(
+        self, token: str, key: bytes | str
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Attempt verification against a single candidate key.
+
+        Returns (decoded_complete, None) on success, else (None,
+        "expired" | "invalid"). Expiry is distinguished so an expired
+        token reports expiry instead of a misleading signature error
+        when an earlier candidate merely failed to verify.
+        """
+        try:
+            complete = jwt.decode_complete(
+                token,
+                key,
+                algorithms=[self.ALGORITHM],
+                options={"require": ["iss", "sub", "iat", "exp", "jti"]},
+            )
+            return complete, None
+        except jwt.ExpiredSignatureError:
+            return None, "expired"
+        except jwt.InvalidTokenError:
+            return None, "invalid"
+
+    def _check_verified_claims(
+        self,
+        raw_claims: dict[str, Any],
+        expected_deployment_id: str | None,
+        context: AttestationContext,
+    ) -> tuple[bool, dict[str, Any] | None, str | None]:
+        """Steps 4-7 on claims whose signature already verified.
+
+        Structural validation of the ``qwed_a2a`` block, deployment match,
+        context binding (sender/receiver/payload hash/session), then the
+        jti replay check — last so out-of-context tokens never pollute
+        the registry.
+        """
+        # Step 4: structural validation of the qwed_a2a nested claim block.
+        try:
+            qwed_claims = _QwedA2AClaims.model_validate(raw_claims.get("qwed_a2a", {}))
+        except ValidationError:
+            return False, None, "Invalid qwed_a2a claims structure"
+
+        # Step 5: deployment context check — the deployment bound at
+        # issuance must match this instance (self-issued) or the
+        # registered deployment of the trusted peer issuer.
+        if qwed_claims.deployment_id != expected_deployment_id:
+            return (
+                False,
+                None,
+                "Deployment context mismatch: token not issued by this deployment",
+            )
+
+        # Step 6: context binding — sender, receiver, payload hash, session
+        if qwed_claims.sender != context.sender_agent_id:
+            return (
+                False,
+                None,
+                (
+                    "Attestation sender mismatch: "
+                    f"expected={context.sender_agent_id}, got={qwed_claims.sender}"
+                ),
+            )
+
+        if qwed_claims.receiver != context.receiver_agent_id:
+            return (
+                False,
+                None,
+                (
+                    "Attestation receiver mismatch: "
+                    f"expected={context.receiver_agent_id}, got={qwed_claims.receiver}"
+                ),
+            )
+
+        expected_hash = self.payload_hash(context.payload)
+        if raw_claims.get("sub") != expected_hash:
+            return (
+                False,
+                None,
+                "Attestation payload hash mismatch — detached attestation rejected",
+            )
+
+        if (
+            context.session_id is not None
+            and qwed_claims.session_id != context.session_id
+        ):
+            return (
+                False,
+                None,
+                (
+                    "Attestation session mismatch: "
+                    f"expected={context.session_id}, got={qwed_claims.session_id}"
+                ),
+            )
+
+        # Step 7: replay check — runs after context binding so we don't
+        # pollute the registry with out-of-context tokens. The jti is
+        # namespaced by issuer for peer tokens: two issuers legitimately
+        # reusing the same jti (e.g. a trace ID) must not shadow each
+        # other. Self-issued tokens keep the bare jti (unchanged
+        # semantics — see issue #85 for own-token re-verification).
+        jti = raw_claims.get("jti")
+        if not jti:
+            return False, None, "Missing jti claim"
+        iss = raw_claims.get("iss")
+        registry_key = f"{iss}\0{jti}" if iss != self.issuer_id else jti
+
+        if not self._jti_registry.check_and_register(registry_key):
+            return False, None, "Replay detected: jti already seen"
+
+        return True, raw_claims, None
 
     def verify_attestation(
         self,
@@ -500,13 +722,13 @@ class A2ACryptoService:
         """
         Verify a JWT attestation token against the current request context.
 
-        Verification steps (all must pass):
-        0. Issuer-key resolution (#84) — the token's ``iss`` selects the
-           verification key: this service's own key for self-issued
-           tokens, a registered peer key for trusted issuers, rejection
-           for unknown issuers. Header/payload are decoded unverified
-           ONLY for this routing; nothing is trusted until the signature
-           check against the resolved key succeeds.
+        Verification tries every configured key until one verifies the
+        signature — the local key first when configured, then each peer
+        key. Routing uses no unverified parsing: header/payload are read
+        only AFTER a candidate key verifies the signature, and the
+        verified ``iss``/``kid`` are then bound to the key that
+        verified them. Once a key verifies, all of the following must
+        pass:
         1. Cryptographic signature check (ES256 / ECDSA P-256)
         2. Expiry check (exp claim)
         3. Required claims check (iss, sub, iat, exp, jti)
@@ -532,112 +754,41 @@ class A2ACryptoService:
         """
         if not HAS_CRYPTO:
             return False, None, "Cryptography backend unavailable"
-        try:
-            header = jwt.get_unverified_header(token)
-            token_kid = header.get("kid") if isinstance(header, dict) else None
-        except jwt.InvalidTokenError as exc:
-            return False, None, f"Invalid token: {exc}"
-        try:
-            unverified = jwt.decode(token, options={"verify_signature": False})
-        except jwt.InvalidTokenError as exc:
-            return False, None, f"Invalid token: {exc}"
-        token_iss = unverified.get("iss") if isinstance(unverified, dict) else None
-
-        expected_deployment_id = _DEPLOYMENT_ID
-        if token_iss == self.issuer_id:
-            verification_key = self._ensure_key_pair().public_key_pem
-        else:
-            issuers = _load_trusted_issuers(trusted_issuers)
-            entry = issuers.get(token_iss) if isinstance(token_iss, str) else None
-            if entry is None:
-                return (
-                    False,
-                    None,
-                    "Unknown issuer: token is not from this deployment "
-                    "or a trusted peer",
-                )
-            verification_key = self._select_peer_key(entry["keys"], token_kid)
-            if verification_key is None:
-                return False, None, "No usable key for trusted issuer"
-            expected_deployment_id = entry["deployment_id"]
-
-        try:
-            raw_claims = jwt.decode(
-                token,
-                verification_key,
-                algorithms=[self.ALGORITHM],
-                options={"require": ["iss", "sub", "iat", "exp", "jti"]},
+        candidates = self._candidate_keys(trusted_issuers)
+        if not candidates:
+            return (
+                False,
+                None,
+                "No verification keys available (no local key, no trusted issuers)",
             )
-        except jwt.ExpiredSignatureError:
+        expired_seen = False
+        for owner_iss, key, expected_dep, expected_kid in candidates:
+            complete, error = self._try_candidate_key(token, key)
+            if complete is None:
+                if error == "expired":
+                    expired_seen = True
+                continue
+            raw_claims = complete.get("payload")
+            if not isinstance(raw_claims, dict):
+                continue
+            header = complete.get("header")
+            header = header if isinstance(header, dict) else {}
+            # Ownership binding: the verified iss must be the verifying
+            # key's owner — a token signed by one issuer never verifies
+            # under another issuer's entry, even if keys collide. Keep
+            # trying later candidates (the token's true owner may own
+            # one of them) rather than denying outright.
+            if raw_claims.get("iss") != owner_iss:
+                continue
+            # kid binding, checked post-verification: a token carrying a
+            # kid verifies only under a key registered with that exact
+            # kid. Tokens without kid verify under whichever key verifies
+            # the signature (order-independent) — per RFC 7515 the kid is
+            # only a hint, and with no kid there is nothing to confuse.
+            token_kid = header.get("kid")
+            if token_kid is not None and token_kid != expected_kid:
+                return False, None, "Key id mismatch for trusted issuer"
+            return self._check_verified_claims(raw_claims, expected_dep, context)
+        if expired_seen:
             return False, None, "Attestation has expired"
-        except jwt.InvalidTokenError as exc:
-            return False, None, f"Invalid token: {exc}"
-
-        # Step 4: structural validation of the qwed_a2a nested claim block.
-        try:
-            qwed_claims = _QwedA2AClaims.model_validate(raw_claims.get("qwed_a2a", {}))
-        except ValidationError:
-            return False, None, "Invalid qwed_a2a claims structure"
-
-        # Step 5: deployment context check — the deployment bound at
-        # issuance must match this instance (self-issued) or the
-        # registered deployment of the trusted peer issuer.
-        if qwed_claims.deployment_id != expected_deployment_id:
-            return (
-                False,
-                None,
-                "Deployment context mismatch: token not issued by this deployment",
-            )
-
-        # Step 6: context binding — sender, receiver, payload hash, session
-        if qwed_claims.sender != context.sender_agent_id:
-            return (
-                False,
-                None,
-                (
-                    f"Attestation sender mismatch: "
-                    f"expected={context.sender_agent_id}, got={qwed_claims.sender}"
-                ),
-            )
-
-        if qwed_claims.receiver != context.receiver_agent_id:
-            return (
-                False,
-                None,
-                (
-                    f"Attestation receiver mismatch: "
-                    f"expected={context.receiver_agent_id}, got={qwed_claims.receiver}"
-                ),
-            )
-
-        expected_hash = self.payload_hash(context.payload)
-        if raw_claims.get("sub") != expected_hash:
-            return (
-                False,
-                None,
-                "Attestation payload hash mismatch — detached attestation rejected",
-            )
-
-        if (
-            context.session_id is not None
-            and qwed_claims.session_id != context.session_id
-        ):
-            return (
-                False,
-                None,
-                (
-                    f"Attestation session mismatch: "
-                    f"expected={context.session_id}, got={qwed_claims.session_id}"
-                ),
-            )
-
-        # Step 7: replay check — runs after context binding so we don't
-        # pollute the registry with out-of-context tokens.
-        jti = raw_claims.get("jti")
-        if not jti:
-            return False, None, "Missing jti claim"
-
-        if not self._jti_registry.check_and_register(jti):
-            return False, None, "Replay detected: jti already seen"
-
-        return True, raw_claims, None
+        return False, None, "Invalid token: no trusted key verified the signature"

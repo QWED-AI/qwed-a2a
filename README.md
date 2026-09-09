@@ -296,13 +296,16 @@ ID and JWKS — copy the entry verbatim from the peer's
 `/.well-known/jwks.json`:
 
 ```bash
-QWED_A2A_TRUSTED_ISSUERS='{"did:qwed:a2a:peer": {"deployment_id": "peer-deploy", "jwks": {"keys": [<peer JWK>]}}}'
+QWED_A2A_TRUSTED_ISSUERS='{"did:qwed:a2a:peer": {"deployment_id": "peer-deploy", "jwks": {"keys": [{"kty": "EC", "crv": "P-256", "kid": "peer-key-id", "x": "<base64url-x>", "y": "<base64url-y>"}]}}}'
 ```
 
-`verify_attestation(token, context)` then accepts the peer's tokens (matched
-by `kid`; unknown issuers, unknown kids, and deployment mismatches fail
-closed), or pass an explicit `trusted_issuers` mapping instead of the env
-var. Key rotation takes effect without a restart.
+Replace the `kid`/`x`/`y` placeholders with the peer's real values (the
+object above is schematic — paste actual coordinates, not the angle
+brackets). `verify_attestation(token, context)` then tries the peer's
+keys until one verifies the signature (unknown issuers, kid mismatches,
+and deployment mismatches fail closed), or pass an explicit
+`trusted_issuers` mapping instead of the env var. Key rotation takes
+effect without a restart.
 
 ---
 

@@ -399,9 +399,9 @@ class TestReplayPrevention:
         assert is_valid is False
         assert error is not None
         # Must be expiry error — proves expiry check runs before replay check.
-        assert (
-            "expired" in error.lower()
-        ), f"Expected expiry error (proving ordering), got: {error!r}"
+        assert "expired" in error.lower(), (
+            f"Expected expiry error (proving ordering), got: {error!r}"
+        )
 
     def test_tampered_token_does_not_pollute_verifier_registry(
         self, crypto_service, verifier
@@ -669,9 +669,9 @@ class TestPersistentSigningKey:
         s2 = A2ACryptoService(issuer_id="did:qwed:a2a:test", pem_key=pem)
 
         is_valid, claims, error = s2.verify_attestation(token, _default_context())
-        assert (
-            is_valid is True
-        ), f"JWT signed before restart is not verifiable after restart: {error}"
+        assert is_valid is True, (
+            f"JWT signed before restart is not verifiable after restart: {error}"
+        )
         assert claims["jti"] == "t_audit_cont"
 
     def test_two_instances_with_same_pem_produce_mutually_verifiable_jwts(self):
@@ -858,7 +858,7 @@ class TestPeerIssuerVerification:
         token, ctx = self._signed(service_a, {"data": "x"}, "t-unknown")
         ok, _, err = service_b.verify_attestation(token, ctx)
         assert not ok
-        assert "Unknown issuer" in (err or "")
+        assert "no trusted key verified" in (err or "")
 
     def test_wrong_kid_denied(self, service_a, service_b):
         """Right issuer, wrong key: kid mismatch fails closed."""
@@ -919,9 +919,7 @@ class TestPeerIssuerVerification:
         from qwed_a2a.security.crypto import AttestationContext
 
         pem_a = _generate_test_pem()
-        service_a = A2ACryptoService(
-            issuer_id="did:qwed:a2a:alpha", pem_key=pem_a
-        )
+        service_a = A2ACryptoService(issuer_id="did:qwed:a2a:alpha", pem_key=pem_a)
         payload = {"data": "nokid"}
         token = self._kidless_token(
             pem_a, service_a.issuer_id, crypto_mod._DEPLOYMENT_ID, payload, "t-nokid"
@@ -933,21 +931,32 @@ class TestPeerIssuerVerification:
         ok, _, err = service_b.verify_attestation(token, ctx, trusted_issuers=entry)
         assert ok, err
 
-    def test_no_kid_multi_key_rejected(self, service_b):
-        """A kid-less token against a multi-key entry is ambiguous: deny."""
+    def test_no_kid_multi_key_verifies(self, service_b):
+        """A kid-less token verifies under whichever key signs it (#84 fix).
+
+        The pre-#84 strict routing denied kid-less tokens against
+        multi-key entries as "ambiguous". Try-each-key makes that
+        moot: the signature itself selects the key, order-independently
+        (RFC 7515: kid is only a hint; with no kid there is nothing to
+        confuse). The token here is signed by the SECOND key so the
+        test also proves the first non-matching key is skipped, not
+        treated as authoritative.
+        """
         import qwed_a2a.security.crypto as crypto_mod
         from qwed_a2a.security.crypto import AttestationContext
 
-        pem_a = _generate_test_pem()
-        service_a = A2ACryptoService(
-            issuer_id="did:qwed:a2a:alpha", pem_key=pem_a
-        )
         other = A2ACryptoService(
             issuer_id="did:qwed:a2a:other", pem_key=_generate_test_pem()
         )
-        payload = {"data": "ambiguous"}
+        pem_a = _generate_test_pem()
+        service_a = A2ACryptoService(issuer_id="did:qwed:a2a:alpha", pem_key=pem_a)
+        payload = {"data": "unambiguous-by-signature"}
         token = self._kidless_token(
-            pem_a, service_a.issuer_id, crypto_mod._DEPLOYMENT_ID, payload, "t-ambiguous"
+            pem_a,
+            service_a.issuer_id,
+            crypto_mod._DEPLOYMENT_ID,
+            payload,
+            "t-sig-picks",
         )
         ctx = AttestationContext(
             sender_agent_id="a1", receiver_agent_id="b1", payload=payload
@@ -957,14 +966,48 @@ class TestPeerIssuerVerification:
                 "deployment_id": crypto_mod._DEPLOYMENT_ID,
                 "jwks": {
                     "keys": [
-                        service_a.get_public_key_jwk(),
                         other.get_public_key_jwk(),
+                        service_a.get_public_key_jwk(),
                     ]
                 },
             }
         }
-        ok, _, _ = service_b.verify_attestation(token, ctx, trusted_issuers=entry)
-        assert not ok
+        ok, _, err = service_b.verify_attestation(token, ctx, trusted_issuers=entry)
+        assert ok, err
+
+    def test_duplicate_kids_verify_order_independent(self, service_b):
+        """Same kid label on two keys: verification cannot depend on order.
+
+        A misconfigured entry may label two keys identically. Trying each
+        key means the token verifies regardless of which same-labeled key
+        is listed first — and the verified iss still binds to the entry
+        owner either way.
+        """
+        import qwed_a2a.security.crypto as crypto_mod
+
+        pem_a = _generate_test_pem()
+        service_a = A2ACryptoService(issuer_id="did:qwed:a2a:alpha", pem_key=pem_a)
+        other = A2ACryptoService(
+            issuer_id="did:qwed:a2a:other", pem_key=_generate_test_pem()
+        )
+        payload = {"data": "dupe-kid"}
+        token, ctx = self._signed(service_a, payload, "t-dupe-kid")
+        # NOTE: _signed uses sender/receiver a1/b1 already matching ctx.
+        jwk_a = service_a.get_public_key_jwk()
+        jwk_other = other.get_public_key_jwk()
+        jwk_other["kid"] = jwk_a["kid"]  # duplicate label, different key
+        for keys in ([jwk_a, jwk_other], [jwk_other, jwk_a]):
+            entry = {
+                service_a.issuer_id: {
+                    "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                    "jwks": {"keys": keys},
+                }
+            }
+            fresh_b = A2ACryptoService(
+                issuer_id="did:qwed:a2a:peer-beta", pem_key=_generate_test_pem()
+            )
+            ok, _, err = fresh_b.verify_attestation(token, ctx, trusted_issuers=entry)
+            assert ok, err
 
     def test_env_fallback_loads_issuers(self, service_a, service_b, monkeypatch):
         """QWED_A2A_TRUSTED_ISSUERS works without an explicit argument."""
@@ -981,7 +1024,180 @@ class TestPeerIssuerVerification:
         monkeypatch.setenv("QWED_A2A_TRUSTED_ISSUERS", "{broken")
         ok, _, err = service_b.verify_attestation(token, ctx)
         assert not ok
-        assert "Unknown issuer" in (err or "")
+        assert "no trusted key verified" in (err or "")
+
+    def test_oversized_env_stays_local_only(self, service_a, service_b, monkeypatch):
+        """A >64KB env config fails closed before parsing (DoS guard).
+
+        NOTE: Windows caps real env vars at 32767 chars, so the oversize
+        boundary is exercised directly against the sanitizer; the env
+        path is covered by test_malformed_env_stays_local_only.
+        """
+        import pytest
+
+        from qwed_a2a.security.crypto import _sanitize_issuer_config_json
+
+        with pytest.raises(ValueError, match="size limit"):
+            _sanitize_issuer_config_json('{"pad": "' + "x" * 70000 + '"}')
+        with pytest.raises(ValueError, match="control characters"):
+            _sanitize_issuer_config_json('{"a": "b\x01c"}')
+        with pytest.raises(ValueError, match="must be a JSON object"):
+            _sanitize_issuer_config_json("[1, 2, 3]")
+        assert _sanitize_issuer_config_json('{"a": 1}') == '{"a": 1}'
+
+    def test_verifier_without_local_key_verifies_peer(self, service_a, monkeypatch):
+        """Verifier-only nodes (no signing key) verify peer tokens.
+
+        Previously ``verify_attestation`` raised via ``_ensure_key_pair``
+        for self-issued routing before peer keys were even considered;
+        try-each-key simply skips the unconfigured local key.
+        """
+        import qwed_a2a.security.crypto as crypto_mod
+
+        monkeypatch.delenv("QWED_A2A_SIGNING_KEY_PEM", raising=False)
+        bare = A2ACryptoService(issuer_id="did:qwed:a2a:bare")
+        token, ctx = self._signed(service_a, {"data": "bare"}, "t-bare")
+        entry = self._entry(service_a, crypto_mod._DEPLOYMENT_ID)
+        ok, _, err = bare.verify_attestation(token, ctx, trusted_issuers=entry)
+        assert ok, err
+
+    def test_verifier_without_any_key_reports_unavailable(self, monkeypatch):
+        """No local key and no trusted issuers: explicit unavailable error."""
+        from qwed_a2a.security.crypto import AttestationContext
+
+        monkeypatch.delenv("QWED_A2A_SIGNING_KEY_PEM", raising=False)
+        bare = A2ACryptoService(issuer_id="did:qwed:a2a:bare")
+        ctx = AttestationContext(
+            sender_agent_id="a1", receiver_agent_id="b1", payload={"data": "x"}
+        )
+        ok, _, err = bare.verify_attestation("junk.token.here", ctx)
+        assert not ok
+        assert "No verification keys available" in (err or "")
+
+    def test_expired_reported_despite_unverifiable_first_candidate(
+        self, service_a, service_b
+    ):
+        """An expired token reports expiry even when tried after a miss.
+
+        The first candidate (unrelated key) fails the signature; the true
+        issuer's key then verifies the signature but finds expiry. The
+        caller must see "expired", not a misleading signature error.
+        """
+        import time
+
+        import jwt as pyjwt
+        import qwed_a2a.security.crypto as crypto_mod
+
+        other = A2ACryptoService(
+            issuer_id="did:qwed:a2a:other", pem_key=_generate_test_pem()
+        )
+        pem_a = service_a._ensure_key_pair().private_key_pem
+        now = int(time.time())
+        body = {
+            "iss": service_a.issuer_id,
+            "sub": A2ACryptoService.payload_hash({"data": "old"}),
+            "iat": now - 600,
+            "exp": now - 300,
+            "jti": "t-expired-order",
+            "qwed_a2a": {
+                "version": "1.0",
+                "verdict": "forwarded",
+                "engine": "e",
+                "sender": "a1",
+                "receiver": "b1",
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "session_id": None,
+            },
+        }
+        token = pyjwt.encode(
+            body,
+            pem_a,
+            algorithm="ES256",
+            headers={"kid": service_a.get_public_key_jwk()["kid"]},
+        )
+        ctx = AttestationContext(
+            sender_agent_id="a1", receiver_agent_id="b1", payload={"data": "old"}
+        )
+        entry = {
+            other.issuer_id: {
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "jwks": {"keys": [other.get_public_key_jwk()]},
+            },
+            service_a.issuer_id: {
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "jwks": {"keys": [service_a.get_public_key_jwk()]},
+            },
+        }
+        ok, _, err = service_b.verify_attestation(token, ctx, trusted_issuers=entry)
+        assert not ok
+        assert "expired" in (err or "").lower()
+
+    def test_cross_issuer_jti_does_not_shadow(self, service_a, service_b):
+        """Same jti from two issuers: both verify (namespaced registry).
+
+        Trace IDs are not globally unique across issuers; without
+        issuer-namespacing the second issuer's token would be rejected
+        as a "replay" of the first.
+        """
+        import qwed_a2a.security.crypto as crypto_mod
+        from qwed_a2a.security.crypto import AttestationContext
+
+        other = A2ACryptoService(
+            issuer_id="did:qwed:a2a:other", pem_key=_generate_test_pem()
+        )
+        payload = {"data": "shared-trace"}
+        ctx = AttestationContext(
+            sender_agent_id="a1", receiver_agent_id="b1", payload=payload
+        )
+        entry = {
+            service_a.issuer_id: {
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "jwks": {"keys": [service_a.get_public_key_jwk()]},
+            },
+            other.issuer_id: {
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "jwks": {"keys": [other.get_public_key_jwk()]},
+            },
+        }
+        token_a, _ = self._signed(service_a, payload, "t-shared")
+        # Hand-mint other's token with the SAME jti but other's key/iss.
+        payload_hash = A2ACryptoService.payload_hash(payload)
+        import time
+
+        import jwt as pyjwt
+
+        now = int(time.time())
+        other_pem = other._ensure_key_pair().private_key_pem
+        body = {
+            "iss": other.issuer_id,
+            "sub": payload_hash,
+            "iat": now,
+            "exp": now + 300,
+            "jti": "t-shared",
+            "qwed_a2a": {
+                "version": "1.0",
+                "verdict": "forwarded",
+                "engine": "e",
+                "sender": "a1",
+                "receiver": "b1",
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "session_id": None,
+            },
+        }
+        token_other = pyjwt.encode(
+            body,
+            other_pem,
+            algorithm="ES256",
+            headers={"kid": other.get_public_key_jwk()["kid"]},
+        )
+        ok_a, _, err_a = service_b.verify_attestation(
+            token_a, ctx, trusted_issuers=entry
+        )
+        assert ok_a, err_a
+        ok_o, _, err_o = service_b.verify_attestation(
+            token_other, ctx, trusted_issuers=entry
+        )
+        assert ok_o, err_o
 
     def test_reject_garbage_jwks(self, service_a, service_b):
         """RSA JWKs, missing coordinates, and junk never become keys."""
@@ -1003,3 +1219,42 @@ class TestPeerIssuerVerification:
         }
         ok, _, _ = service_b.verify_attestation(token, ctx, trusted_issuers=entry)
         assert not ok
+
+
+class TestStrictBase64Decode:
+    """Differential tests for the hand-rolled JWK coordinate decoder.
+
+    The stdlib decoder silently discards non-alphabet characters, so
+    crypto.py ships a strict manual decoder. These tests pin it to the
+    stdlib on valid inputs and pin rejection on junk.
+    """
+
+    def test_matches_stdlib_on_random_vectors(self):
+        import base64
+        import random
+
+        from qwed_a2a.security.crypto import _b64_decode_strict
+
+        rnd = random.Random(42)
+        for length in (1, 2, 3, 31, 32, 33, 64, 100):
+            raw = bytes(rnd.randrange(256) for _ in range(length))
+            std = base64.b64encode(raw).decode()
+            assert _b64_decode_strict(std) == raw
+
+    def test_rejects_non_alphabet_and_bad_padding(self):
+        import pytest
+
+        from qwed_a2a.security.crypto import _b64_decode_strict
+
+        for bad in ("!!!", "AB*C", "AB C", "A", "ABCDE", "AB=C"):
+            with pytest.raises(ValueError):
+                _b64_decode_strict(bad)
+
+    def test_jwk_coordinates_survive_strict_decode(self):
+        """A real exported JWK still converts (decoder accepts P-256 coords)."""
+        from qwed_a2a.security.crypto import _jwk_to_public_pem
+
+        svc = A2ACryptoService(
+            issuer_id="did:qwed:a2a:alpha", pem_key=_generate_test_pem()
+        )
+        assert _jwk_to_public_pem(svc.get_public_key_jwk()) is not None
