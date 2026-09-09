@@ -431,6 +431,22 @@ class TestReplayPrevention:
                 jti_registry=registry,
             )
 
+    def test_bool_ttl_rejected_even_for_unit_validity(self):
+        """True == 1 must not pass as a 1s retention window."""
+        import pytest
+
+        from qwed_a2a.security.crypto import JtiRegistry
+
+        pem = _generate_test_pem()
+        registry = JtiRegistry(ttl_seconds=True)
+        with pytest.raises(ValueError, match="ttl_seconds"):
+            A2ACryptoService(
+                issuer_id="did:qwed:a2a:boolttl",
+                validity_seconds=1,
+                pem_key=pem,
+                jti_registry=registry,
+            )
+
     def test_registry_without_ttl_rejected(self):
         """A registry that does not report retention is unverifiable:
         refused rather than trusted to retain live entries."""

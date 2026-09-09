@@ -525,7 +525,11 @@ class A2ACryptoService:
             # the comparison — including oversized ints, whose float
             # conversion overflows instead of comparing.
             try:
-                ttl_ok = isfinite(registry_ttl) and registry_ttl >= validity_seconds
+                ttl_ok = (
+                    not isinstance(registry_ttl, bool)
+                    and isfinite(registry_ttl)
+                    and registry_ttl >= validity_seconds
+                )
             except (TypeError, OverflowError):
                 ttl_ok = False
             if not ttl_ok:
