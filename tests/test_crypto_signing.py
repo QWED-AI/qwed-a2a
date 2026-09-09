@@ -1288,6 +1288,69 @@ class TestPeerIssuerVerification:
         )
         assert ok_o, err_o
 
+    def test_non_string_envelope_claims_denied(self, service_a, service_b):
+        """Non-string iss/sub/jti fail the strict envelope (RFC 7519).
+
+        Previously an int jti could stringify into a registry key and
+        verify; now the envelope gate denies before any trust decision.
+        """
+        import time
+
+        import jwt as pyjwt
+        import qwed_a2a.security.crypto as crypto_mod
+
+        def _mint(payload, trace):
+            now = int(time.time())
+            body = {
+                "iss": service_a.issuer_id,
+                "sub": A2ACryptoService.payload_hash({"data": "typed"}),
+                "iat": now,
+                "exp": now + 300,
+                "jti": trace,
+                "qwed_a2a": {
+                    "version": "1.0",
+                    "verdict": "forwarded",
+                    "engine": "e",
+                    "sender": "a1",
+                    "receiver": "b1",
+                    "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                    "session_id": None,
+                },
+            }
+            body.update(payload)
+            return pyjwt.encode(
+                body,
+                service_a._ensure_key_pair().private_key_pem,
+                algorithm="ES256",
+                headers={"kid": service_a.get_public_key_jwk()["kid"]},
+            )
+
+        ctx = AttestationContext(
+            sender_agent_id="a1", receiver_agent_id="b1", payload={"data": "typed"}
+        )
+        entry = {
+            service_a.issuer_id: {
+                "deployment_id": crypto_mod._DEPLOYMENT_ID,
+                "jwks": {"keys": [service_a.get_public_key_jwk()]},
+            }
+        }
+        for bad in ({"jti": 12345}, {"sub": None}):
+            token = _mint(bad, f"t-nonstr-{len(str(bad))}")
+            ok, _, _ = service_b.verify_attestation(token, ctx, trusted_issuers=entry)
+            assert not ok
+
+        # A list iss cannot even be minted via PyJWT (encode-side guard),
+        # but hand-crafted tokens reach the decode path — the envelope
+        # must reject it there.
+        import pytest
+        from pydantic import ValidationError
+        from qwed_a2a.security.crypto import _AttestationEnvelope
+
+        with pytest.raises(ValidationError):
+            _AttestationEnvelope.model_validate(
+                {"iss": ["did:qwed:a2a:alpha"], "sub": "x", "jti": "t-x"}
+            )
+
     def test_reject_garbage_jwks(self, service_a, service_b):
         """RSA JWKs, missing coordinates, and junk never become keys."""
         import qwed_a2a.security.crypto as crypto_mod

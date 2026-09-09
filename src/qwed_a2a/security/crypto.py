@@ -19,7 +19,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
 logger = logging.getLogger("qwed_a2a")
 
@@ -151,6 +151,24 @@ class _QwedA2AClaims(BaseModel):
     receiver: str
     deployment_id: str
     session_id: str | None = None
+
+
+class _AttestationEnvelope(BaseModel):
+    """Strict types for the top-level JWT claims used in trust decisions.
+
+    Validated immediately after signature verification, before the issuer
+    binding or replay check reads anything: RFC 7519 defines iss/sub/jti
+    as strings, and no security decision may branch on an unvalidated
+    type (e.g. an int jti stringifying into a registry key, or a list
+    iss slipping past equality). ``iat``/``exp`` are enforced numerically
+    by PyJWT during decode; extra claims pass through untouched.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    iss: StrictStr
+    sub: StrictStr
+    jti: StrictStr
 
 
 @dataclass
@@ -306,7 +324,7 @@ def _sanitize_issuer_config_json(value: str) -> str:
 
 def _is_nonempty_str(value: Any) -> bool:
     """True for usable config strings: present, text, and non-blank."""
-    return isinstance(value, str) and bool(value)
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _normalize_issuer_entry(issuer_id: Any, entry: Any) -> dict[str, Any] | None:
@@ -689,10 +707,14 @@ class A2ACryptoService:
         raw_claims = complete.get("payload")
         if not isinstance(raw_claims, dict):
             return "no-match", None
+        try:
+            envelope = _AttestationEnvelope.model_validate(raw_claims)
+        except ValidationError:
+            return "no-match", None
         # Ownership binding: the verified iss must be the verifying key's
         # owner — a token signed by one issuer never verifies under another
         # issuer's entry, even if keys collide.
-        if raw_claims.get("iss") != owner_iss:
+        if envelope.iss != owner_iss:
             return "no-match", None
         header = complete.get("header")
         header = header if isinstance(header, dict) else {}
@@ -786,6 +808,9 @@ class A2ACryptoService:
         # reusing the same jti (e.g. a trace ID) must not shadow each
         # other. Self-issued tokens keep the bare jti (unchanged
         # semantics — see issue #85 for own-token re-verification).
+        # iss/jti types are guaranteed str here: _attempt_candidate validates
+        # the envelope before binding, so no unvalidated type reaches this
+        # registry key. The truthiness check still rejects empty strings.
         jti = raw_claims.get("jti")
         if not jti:
             return False, None, "Missing jti claim"
