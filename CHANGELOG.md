@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.3.0] — 2026-09-13
+
+Security-hardening release since 0.2.0. No new verification engines; three
+behavioral security changes plus dependency refresh.
+
+### Security
+
+- [#106](https://github.com/QWED-AI/qwed-a2a/pull/106) Authenticate
+  `/a2a/intercept` via per-agent API keys (`QWED_A2A_API_KEYS`). The key's
+  agent identity overrides the body-declared `sender_agent_id` for trust,
+  rate limiting, telemetry, and the attestation JWT. Missing, unknown, or
+  unconfigured keys fail closed with 401. No anonymous access.
+- [#108](https://github.com/QWED-AI/qwed-a2a/pull/108) Peer-issuer key
+  resolution for cross-deployment attestation. Register trusted issuers via
+  `QWED_A2A_TRUSTED_ISSUERS` (or an explicit `trusted_issuers` mapping);
+  unknown issuers, kid mismatches, and deployment mismatches fail closed.
+  Default stays local-only — sharing one private key across deployments is
+  never required and never works.
+- [#109](https://github.com/QWED-AI/qwed-a2a/pull/109) JTI registry lifecycle
+  (fixes #85): issuance vs consumption split. Signing records `trace_id` in
+  a per-instance issuance record (duplicate `trace_id` raises `ValueError`)
+  without consuming a replay slot, so the issuer can verify its own tokens.
+  Consumption registry is process-local by default — share one registry
+  object across in-process instances, or inject an out-of-process store
+  implementing the replay contract, for multi-worker protection. Retention
+  covers each token's full lifetime (TTL + strict iat/exp envelope).
+
+### Breaking
+
+- `AgentMessage.signature` field removed (dead field — tamper detection
+  lives in the JWT `sub` payload hash, not a sender-supplied string).
+- `/a2a/intercept` now requires `X-API-Key`. Deployments upgrading from
+  0.2.0 must set `QWED_A2A_API_KEYS` or every request gets 401.
+
+### Dependencies
+
+- `cryptography` upper bound `<50.0.0` → `<51.0.0` (currently 50.0.1).
+- Refresh: pydantic 2.13.5, fastapi 0.141.1, sentry-sdk 2.68.1,
+  starlette 1.6.0, click 8.5.0, typing-inspection 0.4.4, idna 3.19,
+  pytest 9.1.1, plus remaining test/CI pin updates (see `requirements.txt`).
+
 ## [0.2.0] — 2026-07-27
 
 First public release of qwed-a2a.
