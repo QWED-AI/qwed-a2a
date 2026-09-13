@@ -73,7 +73,7 @@ pygments==2.20.0
     #   rich
 pyjwt==2.13.0
     # via qwed-a2a (pyproject.toml)
-pytest==9.0.3
+pytest==9.1.1
     # via
     #   pytest-asyncio
     #   pytest-codspeed
