@@ -37,8 +37,9 @@ behavioral security changes plus dependency refresh.
 ### Dependencies
 
 - `cryptography` upper bound `<50.0.0` → `<51.0.0` (currently 50.0.1).
-- Refresh: pydantic 2.13.5, fastapi 0.141.1, sentry-sdk 2.68.1, plus
-  test/CI pin updates (see `requirements.txt`).
+- Refresh: pydantic 2.13.5, fastapi 0.141.1, sentry-sdk 2.68.1,
+  starlette 1.6.0, click 8.5.0, typing-inspection 0.4.4, idna 3.19,
+  pytest 9.1.1, plus remaining test/CI pin updates (see `requirements.txt`).
 
 ## [0.2.0] — 2026-07-27
 
