@@ -68,7 +68,12 @@ export QWED_A2A_SIGNING_KEY_PEM=$(cat qwed-a2a-key.pem)
 ### Installation
 
 ```bash
-# From source (recommended for now)
+# From PyPI
+pip install "qwed-a2a>=0.3.0"
+```
+
+```bash
+# From source (for development)
 git clone https://github.com/QWED-AI/qwed-a2a.git
 cd qwed-a2a
 pip install -e ".[dev]"
@@ -425,11 +430,11 @@ All tests use deterministic `trace_id` injection — no randomness, fully reprod
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `pydantic` | ≥2.5.0 | Schema validation (AgentMessage, Config) |
-| `fastapi` | ≥0.104.0 | HTTP gateway for inter-agent routing |
-| `cryptography` | ≥41.0.0 | ECDSA P-256 key generation for attestations |
-| `PyJWT` | ≥2.8.0 | JWT signing and verification |
-| `sentry-sdk` | ≥2.13.0 | Error tracking and telemetry |
+| `pydantic` | ≥2.5.0, <3.0.0 | Schema validation (AgentMessage, Config) |
+| `fastapi` | ≥0.104.0, <1.0.0 | HTTP gateway for inter-agent routing |
+| `cryptography` | ≥41.0.0, <51.0.0 | ECDSA P-256 key generation for attestations |
+| `PyJWT` | ≥2.13.0, <3.0.0 | JWT signing and verification |
+| `sentry-sdk` | ≥2.13.0, <3.0.0 | Error tracking and telemetry |
 
 ---
 
