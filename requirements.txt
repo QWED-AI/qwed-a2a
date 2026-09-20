@@ -89,7 +89,7 @@ pytokens==0.4.1
     # via black
 rich==15.0.0
     # via pytest-codspeed
-ruff==0.16.1
+ruff==0.16.8
     # via qwed-a2a (pyproject.toml)
 sentry-sdk==2.68.1
     # via qwed-a2a (pyproject.toml)
