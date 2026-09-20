@@ -83,7 +83,7 @@ pytest-asyncio==1.4.0
     # via qwed-a2a (pyproject.toml)
 pytest-codspeed==5.0.3
     # via qwed-a2a (pyproject.toml)
-pytest-cov==7.0.0
+pytest-cov==7.1.0
     # via qwed-a2a (pyproject.toml)
 pytokens==0.4.1
     # via black
