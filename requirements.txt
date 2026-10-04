@@ -91,7 +91,7 @@ rich==15.0.0
     # via pytest-codspeed
 ruff==0.16.8
     # via qwed-a2a (pyproject.toml)
-sentry-sdk==2.68.1
+sentry-sdk==2.71.0
     # via qwed-a2a (pyproject.toml)
 starlette==1.6.0
     # via fastapi
