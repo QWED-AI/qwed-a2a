@@ -109,4 +109,6 @@ typing-inspection==0.4.4
     #   fastapi
     #   pydantic
 urllib3==2.8.0
-    # via sentry-sdk
+    # via
+    #   qwed-a2a (pyproject.toml)
+    #   sentry-sdk
