@@ -120,7 +120,7 @@ asyncio.run(main())
 ```text
 Status:  forwarded ✅
 Engine:  finance_guard
-JWT:     eyJhbGciOiJFUzI1NiIsInR5cCI6InF3ZWQtYTJhLWF0dGVz...
+JWT:     eyJhbG...<truncated example token — not a real credential>
 ```
 
 ---
