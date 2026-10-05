@@ -120,7 +120,7 @@ asyncio.run(main())
 ```text
 Status:  forwarded ✅
 Engine:  finance_guard
-JWT:     eyJhbGciOiJFUzI1NiIsInR5cCI6InF3ZWQtYTJhLWF0dGVz...
+JWT:     eyJhbG...<truncated example token — not a real credential>
 ```
 
 ---
@@ -433,8 +433,9 @@ All tests use deterministic `trace_id` injection — no randomness, fully reprod
 | `pydantic` | ≥2.5.0, <3.0.0 | Schema validation (AgentMessage, Config) |
 | `fastapi` | ≥0.104.0, <1.0.0 | HTTP gateway for inter-agent routing |
 | `cryptography` | ≥41.0.0, <51.0.0 | ECDSA P-256 key generation for attestations |
-| `PyJWT` | ≥2.13.0, <3.0.0 | JWT signing and verification |
+| `PyJWT` | ≥2.15.0, <3.0.0 | JWT signing and verification |
 | `sentry-sdk` | ≥2.13.0, <3.0.0 | Error tracking and telemetry |
+| `urllib3` | ≥2.8.0, <3.0.0 | HTTP transport floor — urllib3<2.8.0 has known CVEs (transitive via sentry-sdk) |
 
 ---
 
