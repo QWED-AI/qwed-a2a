@@ -693,8 +693,9 @@ class A2AVerificationInterceptor:
 
     # ── AST dangerous node types ─────────────────────────────────────────────
     # Used by _verify_code_ast() for structural (not textual) analysis.
-    # These are deterministic: if the AST contains one of these constructs
-    # the payload is blocked regardless of how obfuscated the source is.
+    # Matching is deterministic for the constructs it knows (formatting and
+    # comments cannot hide them), but it is a blocklist: constructs outside
+    # it are not seen (see the residual families below).
     _DANGEROUS_CALL_NAMES: frozenset = frozenset(
         {
             "eval",
@@ -703,19 +704,41 @@ class A2AVerificationInterceptor:
             "__import__",
         }
     )
+    # Process-execution functions of the os module and its platform backends.
+    _OS_EXEC_FUNCS: ClassVar[frozenset] = frozenset(
+        {
+            "system",
+            "popen",
+            "startfile",
+            "posix_spawn",
+            "posix_spawnp",
+            *(f"exec{s}" for s in ("l", "le", "lp", "lpe", "v", "ve", "vp", "vpe")),
+            *(f"spawn{s}" for s in ("l", "le", "lp", "lpe", "v", "ve", "vp", "vpe")),
+        }
+    )
     # Maps known dangerous module names to the specific method names that are
     # dangerous when called on that module. This is intentionally scoped to
     # (receiver, method) pairs to avoid false positives:
     #   thread.run()     — safe, receiver is not subprocess/os
     #   client.call()    — safe, receiver is not subprocess/os
     #   subprocess.run() — dangerous, receiver IS subprocess
-    # Limitation: import aliasing (e.g., `import subprocess as sp; sp.run()`)
-    # is not caught here — the regex heuristic layer provides partial coverage.
+    # Receivers are resolved through import aliases and simple re-bindings
+    # (#119): `import os as o; o.system()`, `x = os; x.system()`,
+    # `s = os.system; s()`, `from posix import system as s; s()`.
+    # Known residual families (a blocklist over arbitrary code cannot be
+    # sound, which is why a clean scan is only HEURISTIC_PASS): subscript
+    # callees (`[eval][0]()`), modules reached through objects
+    # (`sys.modules['os']`), tuple-unpacking / walrus / attribute bindings,
+    # and unlisted side-effecting modules (shutil, pickle, runpy, code, socket).
     _DANGEROUS_RECEIVER_METHODS: ClassVar[dict[str, frozenset]] = {
         "subprocess": frozenset(
             {"run", "Popen", "call", "check_output", "check_call", "popen"}
         ),
-        "os": frozenset({"system", "popen"}),
+        "os": _OS_EXEC_FUNCS,
+        "posix": _OS_EXEC_FUNCS,
+        "nt": _OS_EXEC_FUNCS,
+        "builtins": _DANGEROUS_CALL_NAMES,
+        "__builtins__": _DANGEROUS_CALL_NAMES,
     }
     # Dangerous module import names (caught at ast.Import / ast.ImportFrom level)
     _DANGEROUS_IMPORTS: frozenset = frozenset(
@@ -735,7 +758,7 @@ class A2AVerificationInterceptor:
             r"""getattr\s*\(\s*(?:__builtins__|builtins)\s*""", re.IGNORECASE
         ),
         "builtins_dict_access": re.compile(
-            r"""__builtins__\s*\.\s*__dict__\s*\[""", re.IGNORECASE
+            r"""\b(?:__builtins__|builtins)\s*\.\s*__dict__\s*\[""", re.IGNORECASE
         ),
         "base64_exec": re.compile(
             r"""(?:base64\s*\.\s*b64decode|b64decode)\s*\(""", re.IGNORECASE
@@ -881,35 +904,123 @@ class A2AVerificationInterceptor:
             "analysis": "ast+regex",
         }
 
+    # Re-binding hops followed when resolving names (x = os; y = x; ...).
+    _MAX_BINDING_PASSES: ClassVar[int] = 8
+
     def _scan_ast_threats(self, tree: ast.AST) -> list[str]:
         """Collect threats from an AST tree: dangerous calls and imports."""
+        bindings = self._collect_bindings(tree)
         threats: list[str] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
-                threats.extend(self._scan_ast_call(node))
+                threats.extend(self._scan_ast_call(node, bindings))
             elif isinstance(node, ast.Import):
                 threats.extend(self._scan_ast_import(node))
             elif isinstance(node, ast.ImportFrom) and node.module:
                 threats.extend(self._scan_ast_import_from(node))
         return threats
 
-    def _scan_ast_call(self, node: ast.Call) -> list[str]:
+    def _collect_bindings(self, tree: ast.AST) -> dict[str, tuple[str, str | None]]:
+        """Map names bound to a dangerous module or one of its members (#119).
+
+        Follows ``import os as o``, ``from posix import system as s`` and
+        simple re-bindings (``x = os``, ``y = x``, ``s = os.system``,
+        ``e = eval``). Deliberately flow-insensitive: a name bound to a
+        dangerous module anywhere is treated as that module everywhere —
+        the over-approximation fails closed.
+        """
+        bindings: dict[str, tuple[str, str | None]] = {}
+        assigns: list[tuple[list[str], ast.expr]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.asname and alias.name in self._DANGEROUS_RECEIVER_METHODS:
+                        bindings[alias.asname] = (alias.name, None)
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.module in self._DANGEROUS_RECEIVER_METHODS
+            ):
+                for alias in node.names:
+                    if alias.name != "*":
+                        bindings[alias.asname or alias.name] = (node.module, alias.name)
+            elif isinstance(node, ast.Assign):
+                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                if targets:
+                    assigns.append((targets, node.value))
+        for _ in range(self._MAX_BINDING_PASSES):
+            changed = False
+            for targets, value in assigns:
+                resolved = self._resolve_binding(value, bindings)
+                for target in targets if resolved is not None else ():
+                    if bindings.get(target) != resolved:
+                        bindings[target] = resolved
+                        changed = True
+            if not changed:
+                break
+        return bindings
+
+    def _resolve_binding(
+        self, expr: ast.expr, bindings: dict[str, tuple[str, str | None]]
+    ) -> tuple[str, str | None] | None:
+        """Resolve ``name`` / ``name.attr`` to ``(module, member-or-None)``
+        when it denotes a dangerous module, one of its members, or a
+        dangerous builtin; None otherwise."""
+        if isinstance(expr, ast.Name):
+            if expr.id in bindings:
+                return bindings[expr.id]
+            if expr.id in self._DANGEROUS_RECEIVER_METHODS:
+                return (expr.id, None)
+            if expr.id in self._DANGEROUS_CALL_NAMES:
+                return ("builtins", expr.id)
+            return None
+        if isinstance(expr, ast.Attribute):
+            base = self._resolve_binding(expr.value, bindings)
+            if base is not None and base[1] is None:
+                return (base[0], expr.attr)
+        return None
+
+    def _scan_ast_call(
+        self, node: ast.Call, bindings: dict[str, tuple[str, str | None]]
+    ) -> list[str]:
         """Detect dangerous function calls in a single AST Call node."""
         func = node.func
         # Direct dangerous calls: eval(...), exec(...), compile(...)
-        if isinstance(func, ast.Name) and func.id in self._DANGEROUS_CALL_NAMES:
+        if (
+            isinstance(func, ast.Name)
+            and func.id in self._DANGEROUS_CALL_NAMES
+            and func.id not in bindings
+        ):
             return [f"call:{func.id}()"]
-        # Receiver-scoped attribute calls: subprocess.run(...), os.system(...)
-        # Only blocked when called on a known dangerous receiver — this avoids
-        # false positives from legitimate .run()/.call() on other objects.
-        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            receiver = func.value.id
-            dangerous_methods = self._DANGEROUS_RECEIVER_METHODS.get(
-                receiver, frozenset()
-            )
-            if func.attr in dangerous_methods:
-                return [f"call:{receiver}.{func.attr}()"]
+        # Receiver-scoped calls, resolved through aliases and re-bindings:
+        # subprocess.run(...), o.system(...) with `import os as o`, s(...)
+        # with `s = os.system`. Only blocked for a known dangerous receiver —
+        # legitimate .run()/.call() on other objects stay clean.
+        target = self._resolve_binding(func, bindings)
+        if target is not None and target[1] is not None:
+            module, member = target
+            if member in self._DANGEROUS_RECEIVER_METHODS.get(module, frozenset()):
+                return [f"call:{module}.{member}()"]
+        if isinstance(func, ast.Name) and func.id == "getattr":
+            return self._scan_getattr_call(node, bindings)
         return []
+
+    def _scan_getattr_call(
+        self, node: ast.Call, bindings: dict[str, tuple[str, str | None]]
+    ) -> list[str]:
+        """getattr(os, "system") or getattr(os, name) on a dangerous module."""
+        if len(node.args) < 2:
+            return []
+        base = self._resolve_binding(node.args[0], bindings)
+        if base is None or base[1] is not None:
+            return []
+        module, attr = base[0], node.args[1]
+        if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+            if attr.value in self._DANGEROUS_RECEIVER_METHODS.get(module, frozenset()):
+                return [f"call:getattr({module}, {attr.value!r})"]
+            return []
+        # Attribute chosen at runtime on a dangerous module: cannot be
+        # bounded by a blocklist, so fail closed.
+        return [f"call:getattr({module}, <dynamic>)"]
 
     def _scan_ast_import(self, node: ast.Import) -> list[str]:
         """Detect dangerous module imports in a single AST Import node."""
@@ -925,12 +1036,12 @@ class A2AVerificationInterceptor:
         root = node.module.split(".")[0]
         if root in self._DANGEROUS_IMPORTS:
             threats.append(f"import:{root}")
-        if root == "os":
+        methods = self._DANGEROUS_RECEIVER_METHODS.get(node.module)
+        if methods is not None:
             for alias in node.names:
-                if alias.name in self._DANGEROUS_RECEIVER_METHODS.get(
-                    "os", frozenset()
-                ):
-                    threats.append(f"import:os.{alias.name}")
+                # `from os import *` binds every dangerous member unseen (#119).
+                if alias.name == "*" or alias.name in methods:
+                    threats.append(f"import:{node.module}.{alias.name}")
         return threats
 
     def _scan_regex_threats(self, code: str) -> list[str]:
