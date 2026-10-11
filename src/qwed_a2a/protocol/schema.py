@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 logger = logging.getLogger("qwed_a2a")
 
@@ -27,13 +27,40 @@ class PayloadType(str, Enum):
 
 
 class VerdictStatus(str, Enum):
-    """Possible outcomes of interceptor verification."""
+    """Possible outcomes of interceptor verification (#13).
+
+    The states are NOT interchangeable, and only ``FORWARDED`` is admissible
+    (see ``admissible`` / ``ADMISSIBLE_VERDICTS``):
+
+    - FORWARDED: a verification engine ran on the claims and they checked
+      out. The only admissible outcome.
+    - HEURISTIC_PASS: a heuristic scan (code guard) found nothing known to
+      be dangerous. Not a proof, and not admissible.
+    - UNVERIFIABLE: no engine could assess the payload (no engine for the
+      type, or required fields missing). Unsigned; not admissible.
+    - BLOCKED: verification failed or the trust boundary refused the
+      message. Not admissible.
+    - ERROR: the engine crashed before verification completed (possibly
+      after partially processing the payload), so no outcome exists. Fail
+      closed; not admissible.
+    """
 
     FORWARDED = "forwarded"
     BLOCKED = "blocked"
     UNVERIFIABLE = "unverifiable"
     HEURISTIC_PASS = "heuristic_pass"
     ERROR = "error"
+
+    @property
+    def admissible(self) -> bool:
+        """True only for outcomes a consumer may act on without its own checks."""
+        return self in ADMISSIBLE_VERDICTS
+
+
+# The one place admissibility is defined. Consumers must gate on this (or
+# ``VerdictStatus.admissible``), never on ``status != BLOCKED``: that lazy
+# check admits HEURISTIC_PASS, UNVERIFIABLE and ERROR.
+ADMISSIBLE_VERDICTS: frozenset[VerdictStatus] = frozenset({VerdictStatus.FORWARDED})
 
 
 class AgentMessage(BaseModel):
@@ -90,7 +117,7 @@ class VerificationVerdict(BaseModel):
     """
 
     status: VerdictStatus = Field(
-        ..., description="Whether the message was forwarded or blocked"
+        ..., description="Verification outcome; see VerdictStatus for each state"
     )
     reason: str | None = Field(
         default=None, description="Human-readable explanation for blocking"
@@ -112,6 +139,16 @@ class VerificationVerdict(BaseModel):
     details: dict[str, Any] | None = Field(
         default=None, description="Raw verification engine output"
     )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def admissible(self) -> bool:
+        """Whether the receiver may act on the message (#13).
+
+        Derived from ``status`` alone, so it cannot disagree with it, and
+        serialised with the verdict so HTTP consumers get it too.
+        """
+        return self.status.admissible
 
 
 class InterceptorConfig(BaseModel):
@@ -143,7 +180,11 @@ class InterceptorConfig(BaseModel):
         description="Maximum payload size (1MB default)",
     )
     trusted_agents: list[str] | None = Field(
-        default=None, description="Allowlist of agent IDs that bypass verification"
+        default=None,
+        description=(
+            "Agent IDs pre-added to the trust boundary allowlist. Trusted "
+            "agents are still verified — trust never skips an engine (#5)."
+        ),
     )
 
     @field_validator("block_on_error")

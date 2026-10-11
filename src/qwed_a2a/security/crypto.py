@@ -992,6 +992,30 @@ class A2ACryptoService:
 
         return True, raw_claims, None
 
+    @staticmethod
+    def is_admissible(claims: Any) -> bool:
+        """Whether verified attestation claims permit acting on the message (#13).
+
+        Pass the ``claims`` returned by a successful ``verify_attestation()``:
+        a valid token only proves who decided what, and a genuine ``blocked``
+        or ``heuristic_pass`` attestation verifies too. Fails closed —
+        anything but an admissible ``VerdictStatus`` (see
+        ``ADMISSIBLE_VERDICTS``), including ``None`` and malformed claims,
+        is False.
+        """
+        if not isinstance(claims, dict):
+            return False
+        block = claims.get("qwed_a2a")
+        if not isinstance(block, dict):
+            return False
+        verdict = block.get("verdict")
+        if not isinstance(verdict, str):
+            return False
+        try:
+            return VerdictStatus(verdict).admissible
+        except ValueError:
+            return False
+
     def verify_attestation(
         self,
         token: str,
@@ -1033,7 +1057,7 @@ class A2ACryptoService:
             the provided context — not just that the signature is valid.
             It does NOT mean the message should be admitted: a genuine
             ``blocked`` or ``heuristic_pass`` attestation also verifies.
-            Callers must gate admission on ``claims["qwed_a2a"]["verdict"]``.
+            Callers must gate admission on ``is_admissible(claims)``.
         """
         if not HAS_CRYPTO:
             return False, None, "Cryptography backend unavailable"

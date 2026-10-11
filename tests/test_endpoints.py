@@ -188,6 +188,8 @@ class TestInterceptEndpoint:
         ).json()
         assert "status" in data
         assert "audit_trace_id" in data
+        # #13: admissibility travels with the HTTP verdict; GENERAL is not.
+        assert data["admissible"] is False
 
     def test_valid_financial_forwarded(self, client, financial_payload, monkeypatch):
         # Both agents must be trusted so the zero-trust boundary allows the request
@@ -202,6 +204,7 @@ class TestInterceptEndpoint:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "forwarded"
+        assert resp.json()["admissible"] is True
 
     def test_malformed_body_returns_422(self, client, monkeypatch):
         monkeypatch.delenv("QWED_A2A_TRUSTED_AGENTS", raising=False)
