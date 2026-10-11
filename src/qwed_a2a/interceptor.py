@@ -33,7 +33,7 @@ _IGNORABLE_NON_CF = re.compile(
     "\ufe00-\ufe0f\uffa0\ufff0-\ufff8\U000e0000-\U000e0fff]"
 )
 # ASCII control characters that are not whitespace (NUL, BEL, DEL, ...).
-_ASCII_INVISIBLE = {i: None for i in (*range(0x09), *range(0x0E, 0x1C), 0x7F)}
+_ASCII_INVISIBLE = dict.fromkeys((*range(0x09), *range(0x0E, 0x1C), 0x7F))
 
 
 class A2AVerificationInterceptor:
