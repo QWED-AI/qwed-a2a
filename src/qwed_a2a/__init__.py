@@ -7,6 +7,7 @@ __version__ = "0.3.0"
 
 from qwed_a2a.interceptor import A2AVerificationInterceptor
 from qwed_a2a.protocol.schema import (
+    ADMISSIBLE_VERDICTS,
     AgentMessage,
     InterceptorConfig,
     PayloadType,
@@ -15,6 +16,7 @@ from qwed_a2a.protocol.schema import (
 )
 
 __all__ = [
+    "ADMISSIBLE_VERDICTS",
     "A2AVerificationInterceptor",
     "AgentMessage",
     "InterceptorConfig",
