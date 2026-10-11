@@ -8,10 +8,14 @@ This is the [QWED Core] module — all inter-agent messages flow through here.
 """
 
 import ast
+import asyncio
+import contextvars
 import json
 import re
+import threading
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, ClassVar
 
@@ -33,6 +37,25 @@ _IGNORABLE_NON_CF = re.compile(
     "[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2060-\u206f\u3164"
     "\ufe00-\ufe0f\uffa0\ufff0-\ufff8\U000e0000-\U000e0fff]"
 )
+# Engine threads per interceptor (#122). Engines are CPU-bound under the
+# GIL, so more threads add no throughput; the pool only keeps engine work
+# off the event loop.
+_ENGINE_WORKERS = 4
+# Engine runs allowed to wait for a thread. Running + waiting runs are
+# capped, so a stalled pool cannot accumulate queued messages without bound;
+# beyond the cap a run is refused at once (fail closed).
+_ENGINE_QUEUE = 32
+
+
+class _EngineBusyError(Exception):
+    """Every engine slot (running or queued) is taken; the run was refused."""
+
+
+class _EngineTimeoutError(Exception):
+    """The engine run exceeded engine_timeout_seconds (not an engine-raised
+    TimeoutError, which is reported like any other engine exception)."""
+
+
 # ASCII control characters that are not whitespace (NUL, BEL, DEL, ...).
 # 0x09-0x0D and 0x1C-0x1F are deliberately absent: str.isspace() is True
 # for them, so str.split() already turns them into word separators.
@@ -60,6 +83,12 @@ class A2AVerificationInterceptor:
     ):
         self.config = config or InterceptorConfig()
         self.trust = trust_boundary or TrustBoundary(default_allow=False)
+        # Dedicated pool so engine runs never queue behind (or starve) other
+        # users of the loop's default executor (#122).
+        self._engine_executor = ThreadPoolExecutor(
+            max_workers=_ENGINE_WORKERS, thread_name_prefix="qwed-a2a-engine"
+        )
+        self._engine_slots = threading.BoundedSemaphore(_ENGINE_WORKERS + _ENGINE_QUEUE)
 
         # Sync trusted agents from configuration into the TrustBoundary allowlist
         if self.config.trusted_agents:
@@ -78,6 +107,16 @@ class A2AVerificationInterceptor:
                 "Install with: pip install qwed-a2a. "
                 "Operating without JWT attestations violates fail-closed policy."
             )
+
+    def close(self) -> None:
+        """Release the engine pool, e.g. from the application's shutdown hook.
+
+        Call it only once no request can still use this interceptor (after
+        in-flight intercepts have drained). Pending runs are not cancelled,
+        and a running engine finishes in the background; an intercept that
+        starts after ``close()`` fails closed with ERROR.
+        """
+        self._engine_executor.shutdown(wait=False)
 
     @trace_intercept
     async def intercept(
@@ -150,9 +189,40 @@ class A2AVerificationInterceptor:
             self._record(verdict, message.sender_agent_id, start_time)
             return verdict
 
-        # --- Step 2: Route to verification engine ---
+        # --- Step 2: Route to verification engine (off-loop, time-bounded) ---
         try:
-            engine_result = self._route_to_engine(message)
+            engine_result = await self._run_engine(message)
+        except _EngineTimeoutError:
+            # Verification did not complete within budget: fail closed (#122).
+            timeout = self.config.engine_timeout_seconds
+            logger.error(
+                "Verification engine timed out after %ss (trace_id=%s) - fail closed",
+                timeout,
+                trace_id,
+            )
+            verdict = self._build_verdict(
+                trace_id=trace_id,
+                status=VerdictStatus.ERROR,
+                reason=f"Verification engine timed out after {timeout}s - fail closed",
+                engine="engine_timeout",
+                message=message,
+            )
+            self._record(verdict, message.sender_agent_id, start_time)
+            return verdict
+        except _EngineBusyError:
+            # Overloaded: refuse instead of queueing without bound (#122).
+            logger.error(
+                "Verification engine saturated (trace_id=%s) - fail closed", trace_id
+            )
+            verdict = self._build_verdict(
+                trace_id=trace_id,
+                status=VerdictStatus.ERROR,
+                reason="Verification engines are saturated - fail closed",
+                engine="engine_busy",
+                message=message,
+            )
+            self._record(verdict, message.sender_agent_id, start_time)
+            return verdict
         except Exception as exc:  # noqa: BLE001  # fail-closed: catch all engine errors
             # Always fail closed with a first-class ERROR (#38, #15): an engine
             # crash is neither a pass (VERIFIED) nor a content rejection
@@ -218,6 +288,78 @@ class A2AVerificationInterceptor:
 
         self._record(verdict, message.sender_agent_id, start_time)
         return verdict
+
+    async def _run_engine(self, message: AgentMessage) -> dict[str, Any]:
+        """Run the engine on the dedicated pool under a wall-clock budget (#122).
+
+        Keeps engine CPU off the event loop, so health, metrics, JWKS and
+        other intercepts stay responsive during a slow verification. The
+        caller's context (e.g. the Decimal context) is copied into the
+        thread, as ``asyncio.to_thread`` does.
+
+        Bounded: at most ``_ENGINE_WORKERS + _ENGINE_QUEUE`` runs are in
+        flight (running or waiting for a thread); a slot is freed only when
+        a worker is done with the job, so a stalled pool cannot pile up
+        queued messages. Over the cap, ``_EngineBusyError`` is raised
+        without submitting anything. A run abandoned by its caller (timeout
+        or cancellation) is skipped if it has not started yet.
+
+        Limits: a run that already started cannot be killed — it finishes
+        in the background, holding its thread and slot. Long C calls that
+        hold the GIL (``ast.parse``, regex) can still delay the loop; the
+        payload and code size caps (#33) bound those.
+
+        Raises ``_EngineTimeoutError`` when the budget is exceeded.
+        """
+        if not self._engine_slots.acquire(blocking=False):
+            raise _EngineBusyError
+        abandoned = threading.Event()
+        context = contextvars.copy_context()
+
+        def job() -> dict[str, Any] | None:
+            try:
+                if abandoned.is_set():
+                    return None
+                return context.run(self._route_to_engine, message)
+            finally:
+                self._engine_slots.release()
+
+        try:
+            work = self._engine_executor.submit(job)
+        except BaseException:
+            self._engine_slots.release()
+            raise
+        result = asyncio.wrap_future(work)
+
+        def consume_late_error(done: "asyncio.Future[Any]") -> None:
+            # After a timeout nobody awaits ``result``; read a late engine
+            # error here so asyncio does not report it as never retrieved.
+            # Type only — the message may echo payload data.
+            if done.cancelled() or done.exception() is None:
+                return
+            if abandoned.is_set():
+                logger.warning(
+                    "Abandoned engine run raised %s after its caller gave up",
+                    type(done.exception()).__name__,
+                )
+
+        result.add_done_callback(consume_late_error)
+        try:
+            # shield: a timeout must not cancel the pool future, or a
+            # never-started job would skip its finally and leak its slot.
+            return await asyncio.wait_for(
+                asyncio.shield(result),
+                timeout=self.config.engine_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            # From 3.11 asyncio.TimeoutError is the builtin TimeoutError, so an
+            # engine that itself raised one lands here too: report that as the
+            # engine error it is, not as the budget running out.
+            if result.done() and not result.cancelled() and result.exception():
+                raise
+            raise _EngineTimeoutError from exc
+        finally:
+            abandoned.set()
 
     @staticmethod
     def _payload_size(payload: dict[str, Any]) -> int:
