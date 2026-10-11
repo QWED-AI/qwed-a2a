@@ -166,6 +166,8 @@ Recomputes totals from line items using `decimal.Decimal`. Catches math hallucin
 ```
 
 > **Precision:** `ROUND_HALF_UP` quantized to `0.01`. Floating-point arithmetic is **never** used.
+>
+> **Sign domain:** negative `claimed_total`, `amount` or `quantity` returns **UNVERIFIABLE**. The payload has no credit/debit convention, so a sign-inverted transaction cannot be verified even when its arithmetic holds.
 
 ### ⚖️ Logic Guard — Contradiction Detection
 
@@ -177,6 +179,8 @@ Detects logical contradictions using set-based analysis. If a claim is both asse
 ```
 
 > **Determinism:** Contradictions are `sorted()` before output — stable across all environments.
+>
+> **Normalization:** claims are compared after Unicode NFKC, removal of invisible format characters (e.g. zero-width space), `casefold()` and whitespace collapsing, so `"UserIsAdmin"` vs `"userisadmin"` or `"payment sent"` vs `"payment  sent"` is caught. `negated` must be a boolean; anything else is **UNVERIFIABLE**. Cross-script homoglyphs are not detected — this is string matching, not semantic logic.
 
 ### 🔒 Code Guard — AST + Heuristic Security Scan
 

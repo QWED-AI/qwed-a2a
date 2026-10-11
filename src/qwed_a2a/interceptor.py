@@ -10,6 +10,7 @@ This is the [QWED Core] module — all inter-agent messages flow through here.
 import ast
 import re
 import time
+import unicodedata
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, ClassVar
 
@@ -313,6 +314,14 @@ class A2AVerificationInterceptor:
                 "FINANCIAL_TRANSACTION payload contains non-finite field: "
                 "data.claimed_total must be a finite numeric value."
             )
+        # Sign domain (#86): the arithmetic identity holds for negated
+        # values, but this payload has no credit/debit convention, so a
+        # negative total cannot be verified — fail closed, never forward.
+        if dec_claimed < 0:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains negative field: "
+                "data.claimed_total must not be negative."
+            )
 
         if not line_items:
             return self._finance_unverifiable(
@@ -360,6 +369,11 @@ class A2AVerificationInterceptor:
             return self._finance_unverifiable(
                 "FINANCIAL_TRANSACTION payload contains non-finite "
                 "line item: amount and quantity must be finite numeric values."
+            )
+        if dec_amount < 0 or dec_quantity < 0:
+            return self._finance_unverifiable(
+                "FINANCIAL_TRANSACTION payload contains negative "
+                "line item: amount and quantity must not be negative."
             )
         return None
 
@@ -418,7 +432,8 @@ class A2AVerificationInterceptor:
                     ),
                 }
             claim = assertion.get("claim")
-            if not isinstance(claim, str) or not claim.strip():
+            key = self._normalize_claim(claim) if isinstance(claim, str) else ""
+            if not key:
                 return {
                     "verified": False,
                     "status": "unverifiable",
@@ -429,12 +444,23 @@ class A2AVerificationInterceptor:
                     ),
                 }
             negated = assertion.get("negated", False)
+            # Strict bool (#86): the string "false" is truthy, so a lax
+            # check would silently invert the claim's polarity.
+            if not isinstance(negated, bool):
+                return {
+                    "verified": False,
+                    "status": "unverifiable",
+                    "engine": "logic_guard",
+                    "reason": (
+                        "LOGIC_ASSERTION payload contains malformed "
+                        "assertion entry: negated must be a boolean."
+                    ),
+                }
 
-            stripped = claim.strip()
             if negated:
-                negative_claims.add(stripped)
+                negative_claims.add(key)
             else:
-                positive_claims.add(stripped)
+                positive_claims.add(key)
 
         contradictions = sorted(positive_claims & negative_claims)
 
@@ -508,6 +534,21 @@ class A2AVerificationInterceptor:
         "os_system": re.compile(r"""\bos\.system\s*\(""", re.IGNORECASE),
         "os_popen": re.compile(r"""\bos\.popen\s*\(""", re.IGNORECASE),
     }
+
+    @staticmethod
+    def _normalize_claim(claim: str) -> str:
+        """Canonical comparison key for a logic claim (#86).
+
+        NFKC folds compatibility forms (full-width, ligatures), invisible
+        format characters (zero-width space/joiner, BOM) are dropped,
+        casefold handles case, and whitespace runs collapse to one space —
+        so case, spacing and invisible-character variants of a claim
+        cannot evade contradiction detection. Cross-script homoglyphs are
+        out of scope for string matching.
+        """
+        text = unicodedata.normalize("NFKC", claim)
+        text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+        return " ".join(text.casefold().split())
 
     def _verify_code(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
