@@ -15,7 +15,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.routing import APIRoute
-from starlette.types import Message
+from starlette.types import Message, Receive
 
 from qwed_a2a import __version__
 from qwed_a2a.interceptor import A2AVerificationInterceptor
@@ -34,6 +34,35 @@ def _body_too_large(limit: int) -> HTTPException:
         status_code=413,
         detail=f"Request body exceeds the {limit}-byte limit.",
     )
+
+
+def _reject_declared_oversize(request: Request, limit: int) -> None:
+    """Content-Length fast path: 400 if malformed, 413 if over the limit."""
+    declared = request.headers.get("content-length")
+    if declared is None:
+        return
+    # isascii(): str.isdigit() accepts non-ASCII digits such as superscript
+    # two, which int() rejects (a latin-1 header byte 0xB2 decodes to one).
+    if not (declared.isascii() and declared.isdigit()):
+        raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
+    if int(declared) > limit:
+        raise _body_too_large(limit)
+
+
+def _capped_receive(receive: Receive, limit: int) -> Receive:
+    """Wrap an ASGI receive so the streamed body cannot exceed ``limit``."""
+    received = 0
+
+    async def capped() -> Message:
+        nonlocal received
+        message = await receive()
+        if message["type"] == "http.request":
+            received += len(message.get("body", b""))
+            if received > limit:
+                raise _body_too_large(limit)
+        return message
+
+    return capped
 
 
 class _BodySizeLimitRoute(APIRoute):
@@ -59,28 +88,9 @@ class _BodySizeLimitRoute(APIRoute):
                 get_interceptor().config.max_payload_size_bytes
                 + ENVELOPE_ALLOWANCE_BYTES
             )
-            declared = request.headers.get("content-length")
-            if declared is not None:
-                if not declared.isdigit():
-                    raise HTTPException(
-                        status_code=400, detail="Invalid Content-Length header."
-                    )
-                if int(declared) > limit:
-                    raise _body_too_large(limit)
-
-            received = 0
-            receive = request.receive
-
-            async def capped_receive() -> Message:
-                nonlocal received
-                message = await receive()
-                if message["type"] == "http.request":
-                    received += len(message.get("body", b""))
-                    if received > limit:
-                        raise _body_too_large(limit)
-                return message
-
-            return await original(Request(request.scope, capped_receive))
+            _reject_declared_oversize(request, limit)
+            capped = _capped_receive(request.receive, limit)
+            return await original(Request(request.scope, capped))
 
         return size_limited_handler
 

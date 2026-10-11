@@ -12,7 +12,7 @@ Payload size enforcement (#33).
 import json
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from qwed_a2a import interceptor as interceptor_module
@@ -118,6 +118,19 @@ class TestInterceptSizeLimit:
         assert metrics.total_blocked == 1
         assert metrics.by_engine.get("size_limit") == 1
 
+    async def test_circular_payload_unverifiable(self, small_interceptor):
+        """Library-only: an unserializable payload yields a defined, unsigned
+        UNVERIFIABLE verdict instead of an exception."""
+        payload = {"a": []}
+        payload["a"].append(payload)
+        v = await small_interceptor.intercept(
+            _message(payload), trace_id="t_size_circular"
+        )
+        assert v.status == VerdictStatus.UNVERIFIABLE
+        assert v.engine_used == "size_limit"
+        assert v.attestation_jwt is None
+        assert "not JSON-serializable" in v.reason
+
 
 @pytest.mark.asyncio
 class TestCodeSubCap:
@@ -150,6 +163,29 @@ class TestCodeSubCap:
             trace_id="t_code_at_cap",
         )
         assert v.status == VerdictStatus.HEURISTIC_PASS
+
+    @pytest.mark.parametrize(
+        "code",
+        [b"x = 1\n" * 70000, bytearray(b"x = 1\n"), 12345, ["x = 1"]],
+        ids=["bytes-over-cap", "bytearray", "int", "list"],
+    )
+    async def test_non_string_code_unverifiable_before_parse(
+        self, interceptor, monkeypatch, code
+    ):
+        """Bytes would slip past the text sub-cap into ast.parse; any
+        non-string source is refused before parsing."""
+
+        def no_parse(*_a, **_k):
+            raise AssertionError("ast.parse must not run on non-string code")
+
+        monkeypatch.setattr(interceptor_module.ast, "parse", no_parse)
+        v = await interceptor.intercept(
+            _message({"code": code}, PayloadType.CODE_EXECUTION),
+            trace_id="t_code_non_str",
+        )
+        assert v.status == VerdictStatus.UNVERIFIABLE
+        assert v.engine_used == "code_guard"
+        assert "must be a string" in v.reason
 
 
 class TestHttpBodyLimit:
@@ -234,6 +270,21 @@ class TestHttpBodyLimit:
         )
         assert resp.status_code == 400
         assert intercept_calls == []
+
+    @pytest.mark.parametrize(
+        "raw", [bytes([0xB2]), bytes([0xB9]), b"1" + bytes([0xB3])]
+    )
+    def test_non_ascii_digit_content_length_400(self, raw):
+        """Raw header byte 0xB2 decodes (latin-1) to superscript two, which
+        str.isdigit() accepts but int() rejects: must be 400, not a crash.
+        Built at the ASGI level — TestClient would UTF-8 encode the value."""
+        request = Request(
+            {"type": "http", "method": "POST", "headers": [(b"content-length", raw)]}
+        )
+        assert request.headers["content-length"].isdigit()
+        with pytest.raises(HTTPException) as exc:
+            ep._reject_declared_oversize(request, 10_000)
+        assert exc.value.status_code == 400
 
     def test_body_within_allowance_reaches_interceptor(self, client, intercept_calls):
         """A body over max_payload_size_bytes but within the envelope
