@@ -126,7 +126,8 @@ class TestOffLoop:
         icpt = _make(crypto_service, trust_boundary, timeout=5.0)
         monkeypatch.setattr(icpt, "_route_to_engine", _slow_engine(0, seen))
         await icpt.intercept(valid_financial_message, trace_id="t_budget_thread")
-        assert seen and seen[0].startswith("qwed-a2a-engine")
+        assert seen
+        assert seen[0].startswith("qwed-a2a-engine")
         assert seen[0] != threading.main_thread().name
 
     async def test_loop_stays_responsive_during_engine_run(
@@ -167,6 +168,116 @@ class TestOffLoop:
             ctx.prec = 41
             await icpt.intercept(valid_financial_message, trace_id="t_budget_ctx")
         assert seen == [41]
+
+    async def test_loop_responsive_under_cpu_bound_engines(
+        self, crypto_service, trust_boundary, valid_financial_message, monkeypatch
+    ):
+        """Pure-Python CPU work (holds the GIL between switch intervals) on
+        every pool thread still leaves the loop ticking; a blocking engine
+        would allow ~0 ticks."""
+
+        def busy(_message):
+            end = time.perf_counter() + 0.4
+            while time.perf_counter() < end:
+                sum(range(200))
+            return {"verified": True, "engine": "finance_guard"}
+
+        icpt = _make(crypto_service, trust_boundary, timeout=5.0)
+        monkeypatch.setattr(icpt, "_route_to_engine", busy)
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        task = asyncio.create_task(ticker())
+        try:
+            verdicts = await asyncio.gather(
+                *(
+                    icpt.intercept(valid_financial_message, trace_id=f"t_cpu_{i}")
+                    for i in range(interceptor_module._ENGINE_WORKERS)
+                )
+            )
+        finally:
+            task.cancel()
+        assert all(v.status == VerdictStatus.VERIFIED for v in verdicts)
+        assert ticks >= 5
+
+
+@pytest.mark.asyncio
+class TestBoundedQueue:
+    async def test_over_capacity_refused_immediately(
+        self, crypto_service, trust_boundary, valid_financial_message, monkeypatch
+    ):
+        """With every slot taken, a further run is refused at once (fail
+        closed) instead of being queued without bound."""
+        monkeypatch.setattr(interceptor_module, "_ENGINE_QUEUE", 0)
+        icpt = _make(crypto_service, trust_boundary, timeout=5.0)
+        monkeypatch.setattr(icpt, "_route_to_engine", _slow_engine(0.4))
+        workers = interceptor_module._ENGINE_WORKERS
+
+        busy = [
+            asyncio.create_task(
+                icpt.intercept(valid_financial_message, trace_id=f"t_busy_{i}")
+            )
+            for i in range(workers)
+        ]
+        await asyncio.sleep(0.05)  # let them take every slot
+        start = time.perf_counter()
+        refused = await icpt.intercept(valid_financial_message, trace_id="t_busy_x")
+        assert time.perf_counter() - start < 0.2
+        assert refused.status == VerdictStatus.ERROR
+        assert refused.engine_used == "engine_busy"
+        assert refused.admissible is False
+
+        done = await asyncio.gather(*busy)
+        assert all(v.status == VerdictStatus.VERIFIED for v in done)
+
+    async def test_abandoned_queued_run_is_skipped_and_slot_freed(
+        self, crypto_service, trust_boundary, valid_financial_message, monkeypatch
+    ):
+        """A queued run whose caller timed out never executes, and every slot
+        returns once the pool drains (no leak)."""
+        monkeypatch.setattr(interceptor_module, "_ENGINE_QUEUE", 1)
+        icpt = _make(crypto_service, trust_boundary, timeout=0.1)
+        calls = []
+
+        def engine(_message):
+            calls.append(1)
+            time.sleep(0.4)
+            return {"verified": True, "engine": "finance_guard"}
+
+        monkeypatch.setattr(icpt, "_route_to_engine", engine)
+        workers = interceptor_module._ENGINE_WORKERS
+        verdicts = await asyncio.gather(
+            *(
+                icpt.intercept(valid_financial_message, trace_id=f"t_abandon_{i}")
+                for i in range(workers + 1)
+            )
+        )
+        assert all(v.engine_used == "engine_timeout" for v in verdicts)
+
+        await asyncio.sleep(0.6)  # let the running engines finish
+        assert len(calls) == workers  # the queued, abandoned run was skipped
+        capacity = workers + 1
+        for _ in range(capacity):
+            assert icpt._engine_slots.acquire(blocking=False)
+        assert not icpt._engine_slots.acquire(blocking=False)
+
+    async def test_closed_interceptor_fails_closed(
+        self, crypto_service, trust_boundary, valid_financial_message
+    ):
+        icpt = _make(crypto_service, trust_boundary, timeout=5.0)
+        icpt.close()
+        v = await icpt.intercept(valid_financial_message, trace_id="t_closed")
+        assert v.status == VerdictStatus.ERROR
+        assert v.admissible is False
+        # The refused submit returned its slot.
+        capacity = interceptor_module._ENGINE_WORKERS + interceptor_module._ENGINE_QUEUE
+        for _ in range(capacity):
+            assert icpt._engine_slots.acquire(blocking=False)
 
 
 @pytest.mark.asyncio
