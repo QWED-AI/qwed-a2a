@@ -14,6 +14,11 @@
     compact UTF-8 JSON exceeds the limit, before trust evaluation or any
     engine runs; this also covers library callers.
   - The code guard blocks code over 256 KiB before `ast.parse`.
+- [#122](https://github.com/QWED-AI/qwed-a2a/issues/122) Engines run off the
+  event loop on a dedicated thread pool under a wall-clock budget, new config
+  `engine_timeout_seconds` (default 5 s, range 0-60 s). A run that exceeds it
+  fails closed with `error` (engine `engine_timeout`); health, metrics, JWKS
+  and other intercepts stay responsive while an engine is busy.
 
 ### Breaking
 

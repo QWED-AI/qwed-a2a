@@ -8,10 +8,14 @@ This is the [QWED Core] module — all inter-agent messages flow through here.
 """
 
 import ast
+import asyncio
+import contextvars
+import functools
 import json
 import re
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, ClassVar
 
@@ -33,6 +37,11 @@ _IGNORABLE_NON_CF = re.compile(
     "[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2060-\u206f\u3164"
     "\ufe00-\ufe0f\uffa0\ufff0-\ufff8\U000e0000-\U000e0fff]"
 )
+# Engine threads per interceptor (#122). Engines are CPU-bound under the
+# GIL, so more threads add no throughput; the pool only keeps engine work
+# off the event loop and bounds how many runs can be in flight.
+_ENGINE_WORKERS = 4
+
 # ASCII control characters that are not whitespace (NUL, BEL, DEL, ...).
 # 0x09-0x0D and 0x1C-0x1F are deliberately absent: str.isspace() is True
 # for them, so str.split() already turns them into word separators.
@@ -60,6 +69,11 @@ class A2AVerificationInterceptor:
     ):
         self.config = config or InterceptorConfig()
         self.trust = trust_boundary or TrustBoundary(default_allow=False)
+        # Dedicated pool so engine runs never queue behind (or starve) other
+        # users of the loop's default executor (#122).
+        self._engine_executor = ThreadPoolExecutor(
+            max_workers=_ENGINE_WORKERS, thread_name_prefix="qwed-a2a-engine"
+        )
 
         # Sync trusted agents from configuration into the TrustBoundary allowlist
         if self.config.trusted_agents:
@@ -150,9 +164,26 @@ class A2AVerificationInterceptor:
             self._record(verdict, message.sender_agent_id, start_time)
             return verdict
 
-        # --- Step 2: Route to verification engine ---
+        # --- Step 2: Route to verification engine (off-loop, time-bounded) ---
         try:
-            engine_result = self._route_to_engine(message)
+            engine_result = await self._run_engine(message)
+        except TimeoutError:
+            # Verification did not complete within budget: fail closed (#122).
+            timeout = self.config.engine_timeout_seconds
+            logger.error(
+                "Verification engine timed out after %ss (trace_id=%s) - fail closed",
+                timeout,
+                trace_id,
+            )
+            verdict = self._build_verdict(
+                trace_id=trace_id,
+                status=VerdictStatus.ERROR,
+                reason=f"Verification engine timed out after {timeout}s - fail closed",
+                engine="engine_timeout",
+                message=message,
+            )
+            self._record(verdict, message.sender_agent_id, start_time)
+            return verdict
         except Exception as exc:  # noqa: BLE001  # fail-closed: catch all engine errors
             # Always fail closed with a first-class ERROR (#38, #15): an engine
             # crash is neither a pass (VERIFIED) nor a content rejection
@@ -218,6 +249,35 @@ class A2AVerificationInterceptor:
 
         self._record(verdict, message.sender_agent_id, start_time)
         return verdict
+
+    async def _run_engine(self, message: AgentMessage) -> dict[str, Any]:
+        """Run the engine on the dedicated pool under a wall-clock budget (#122).
+
+        Keeps engine CPU off the event loop, so health, metrics, JWKS and
+        other intercepts stay responsive during a slow verification. The
+        caller's context (e.g. the Decimal context) is copied into the
+        thread, as ``asyncio.to_thread`` does.
+
+        Limits: a timed-out run cannot be killed — its thread finishes in
+        the background and holds one pool slot until it does (a saturated
+        pool makes further runs time out, i.e. fail closed). Long C calls
+        that hold the GIL (``ast.parse``, regex) can still delay the loop;
+        the payload and code size caps (#33) are what bound those.
+
+        Raises ``TimeoutError`` when the budget is exceeded.
+        """
+        loop = asyncio.get_running_loop()
+        run = functools.partial(
+            contextvars.copy_context().run, self._route_to_engine, message
+        )
+        future = loop.run_in_executor(self._engine_executor, run)
+        try:
+            return await asyncio.wait_for(
+                future, timeout=self.config.engine_timeout_seconds
+            )
+        except asyncio.TimeoutError as exc:
+            # asyncio.TimeoutError is only an alias of TimeoutError from 3.11.
+            raise TimeoutError from exc
 
     @staticmethod
     def _payload_size(payload: dict[str, Any]) -> int:

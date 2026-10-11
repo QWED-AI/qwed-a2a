@@ -395,6 +395,12 @@ Size limits are enforced by the router itself, so they apply wherever `router` i
 
 Keep a reverse-proxy body limit as well (for example nginx `client_max_body_size`) as outer defense in depth.
 
+### Engine execution budget
+
+Verification engines run on a small dedicated thread pool, off the event loop, so `/a2a/health`, `/a2a/metrics`, JWKS and other intercepts keep answering while an engine works. Each run has a wall-clock budget, `engine_timeout_seconds` (default 5 s, range 0-60 s); a run that exceeds it fails closed with **ERROR** (engine `engine_timeout`).
+
+Limits to know: Python cannot kill a running thread, so a timed-out run finishes in the background and holds a pool slot until it does — if the pool saturates, further runs time out (fail closed) rather than queue forever. Long C-level calls that hold the GIL (`ast.parse`, regex) can still delay the loop; the size limits above are what bound those. Each worker process has its own pool and state — multiple workers add capacity, not isolation.
+
 ### cURL Test
 
 ```bash
@@ -448,6 +454,7 @@ qwed-a2a/
 | `enable_code_verification` | `bool` | `True` | Route code payloads to regex security scanning |
 | `block_on_error` | `bool` | `True` | **Deprecated, no effect.** Engine errors always fail closed with `ERROR`; setting `False` emits a `DeprecationWarning` and logs a warning |
 | `max_payload_size_bytes` | `int` | `1,048,576` | Maximum payload size (1 MiB; allowed range 1 KiB-10 MiB). Enforced on the HTTP body (413) and in `intercept()` (`blocked`); see [Request size limits](#request-size-limits) |
+| `engine_timeout_seconds` | `float` | `5.0` | Wall-clock budget per engine run (0-60 s); exceeding it fails closed with `ERROR` (engine `engine_timeout`). See [Engine execution budget](#engine-execution-budget) |
 | `trusted_agents` | `List[str]` | `None` | Agent IDs pre-added to the trust boundary allowlist |
 
 ---

@@ -195,6 +195,15 @@ class InterceptorConfig(BaseModel):
         le=10_485_760,
         description="Maximum payload size (1MB default)",
     )
+    engine_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=60,
+        description=(
+            "Wall-clock budget for one verification engine run (#122). "
+            "Exceeding it fails closed with an ERROR verdict."
+        ),
+    )
     trusted_agents: list[str] | None = Field(
         default=None,
         description=(
