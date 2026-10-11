@@ -9,8 +9,12 @@ Finance: negative amounts, quantities and totals have no sign convention
 in this payload, so they are UNVERIFIABLE (fail closed), never FORWARDED.
 """
 
+import sys
+import unicodedata
+
 import pytest
 
+from qwed_a2a.interceptor import A2AVerificationInterceptor
 from qwed_a2a.protocol.schema import AgentMessage, PayloadType, VerdictStatus
 
 
@@ -45,6 +49,13 @@ class TestLogicNormalization:
             ("payment sent", "ｐａｙｍｅｎｔ ｓｅｎｔ"),  # full-width (NFKC)
             ("payment sent", "pay\u200bment sent"),  # zero-width space
             ("payment sent", "\ufeffpayment sent"),  # BOM
+            (
+                "caf" + chr(0xE9) + " paid",
+                "cafe" + chr(0x200B) + chr(0x301) + " paid",
+            ),  # ZWSP blocking NFKC
+            ("paid", "paid" + chr(0xFE0F)),  # variation selector (not Cf)
+            ("payment", "pay" + chr(0) + "ment"),  # NUL control char
+            ("file", chr(0xFB01) + "le"),  # fi ligature (NFKC)
         ],
     )
     async def test_variant_contradiction_blocked(self, interceptor, positive, negative):
@@ -119,6 +130,58 @@ class TestLogicNormalization:
             trace_id="t_logic_default_neg",
         )
         assert verdict.status == VerdictStatus.BLOCKED
+
+
+class TestNormalizeClaimKey:
+    """Properties of the comparison key itself."""
+
+    normalize = staticmethod(A2AVerificationInterceptor._normalize_claim)
+
+    def test_every_invisible_code_point_is_dropped(self):
+        """No format or non-space control code point can split a claim
+        into a distinct key."""
+        target = self.normalize("payment")
+        leaked = []
+        for cp in range(sys.maxunicode + 1):
+            if 0xD800 <= cp <= 0xDFFF:
+                continue
+            ch = chr(cp)
+            cat = unicodedata.category(ch)
+            if cat == "Cf" or (cat == "Cc" and not ch.isspace()):
+                if self.normalize("pay" + ch + "ment") != target:
+                    leaked.append(hex(cp))
+        assert leaked == []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "caf" + chr(0xE9),
+            "cafe" + chr(0x200B) + chr(0x301),
+            chr(0x1E9E),  # capital sharp s
+            chr(0xFB01),  # fi ligature
+            chr(0x3164) + "x",  # Hangul filler
+        ],
+    )
+    def test_idempotent(self, text):
+        key = self.normalize(text)
+        assert self.normalize(key) == key
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "UserIsAdmin",
+            "  a" + chr(9) + "B  c ",
+            "pay" + chr(0) + "ment",
+            "x" + chr(0x7F) + "y",
+        ],
+    )
+    def test_ascii_fast_path_matches_unicode_path(self, text):
+        """The ASCII shortcut must give the same key as the full pipeline."""
+        visible = "".join(
+            c for c in text if not (unicodedata.category(c) == "Cc" and not c.isspace())
+        )
+        slow = " ".join(unicodedata.normalize("NFKC", visible.casefold()).split())
+        assert self.normalize(text) == slow
 
 
 @pytest.mark.asyncio

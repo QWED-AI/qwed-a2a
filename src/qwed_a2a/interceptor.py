@@ -25,6 +25,16 @@ from qwed_a2a.security.crypto import HAS_CRYPTO, A2ACryptoService
 from qwed_a2a.security.trust_boundary import TrustBoundary
 from qwed_a2a.utils.telemetry import logger, record_intercept, trace_intercept
 
+# Invisible code points stripped from logic claims before comparison (#86):
+# Default_Ignorable_Code_Point members outside category Cf (variation
+# selectors, Hangul fillers, ...) — Cf itself is matched by category.
+_IGNORABLE_NON_CF = re.compile(
+    "[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2060-\u206f\u3164"
+    "\ufe00-\ufe0f\uffa0\ufff0-\ufff8\U000e0000-\U000e0fff]"
+)
+# ASCII control characters that are not whitespace (NUL, BEL, DEL, ...).
+_ASCII_INVISIBLE = {i: None for i in (*range(0x09), *range(0x0E, 0x1C), 0x7F)}
+
 
 class A2AVerificationInterceptor:
     """
@@ -539,16 +549,35 @@ class A2AVerificationInterceptor:
     def _normalize_claim(claim: str) -> str:
         """Canonical comparison key for a logic claim (#86).
 
-        NFKC folds compatibility forms (full-width, ligatures), invisible
-        format characters (zero-width space/joiner, BOM) are dropped,
-        casefold handles case, and whitespace runs collapse to one space —
-        so case, spacing and invisible-character variants of a claim
-        cannot evade contradiction detection. Cross-script homoglyphs are
-        out of scope for string matching.
+        Invisible characters (format chars like zero-width space and BOM,
+        other default-ignorables like variation selectors, and non-space
+        control chars) are dropped FIRST — left in place they block NFKC
+        composition (e + zero-width space + combining acute would never
+        become "é").
+        Then NFKC folds compatibility forms, casefold handles case (NFKC
+        again, since casefold can denormalize), and whitespace runs
+        collapse to one space. The key is idempotent over every code
+        point. Cross-script homoglyphs are out of scope for string matching.
         """
-        text = unicodedata.normalize("NFKC", claim)
-        text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
-        return " ".join(text.casefold().split())
+        if claim.isascii():
+            # Fast path: NFKC is the identity on ASCII and casefold == lower.
+            # isprintable() is False only when a control char (tab and
+            # newline included) is present, so translate is usually skipped.
+            if not claim.isprintable():
+                claim = claim.translate(_ASCII_INVISIBLE)
+            return " ".join(claim.lower().split())
+        text = _IGNORABLE_NON_CF.sub("", claim)
+        text = "".join(
+            ch
+            for ch in text
+            if not (
+                unicodedata.category(ch) == "Cf"
+                or (unicodedata.category(ch) == "Cc" and not ch.isspace())
+            )
+        )
+        text = unicodedata.normalize("NFKC", text)
+        text = unicodedata.normalize("NFKC", text.casefold())
+        return " ".join(text.split())
 
     def _verify_code(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
