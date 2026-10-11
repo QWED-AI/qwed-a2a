@@ -51,6 +51,11 @@ class _EngineBusyError(Exception):
     """Every engine slot (running or queued) is taken; the run was refused."""
 
 
+class _EngineTimeoutError(Exception):
+    """The engine run exceeded engine_timeout_seconds (not an engine-raised
+    TimeoutError, which is reported like any other engine exception)."""
+
+
 # ASCII control characters that are not whitespace (NUL, BEL, DEL, ...).
 # 0x09-0x0D and 0x1C-0x1F are deliberately absent: str.isspace() is True
 # for them, so str.split() already turns them into word separators.
@@ -187,7 +192,7 @@ class A2AVerificationInterceptor:
         # --- Step 2: Route to verification engine (off-loop, time-bounded) ---
         try:
             engine_result = await self._run_engine(message)
-        except TimeoutError:
+        except _EngineTimeoutError:
             # Verification did not complete within budget: fail closed (#122).
             timeout = self.config.engine_timeout_seconds
             logger.error(
@@ -304,7 +309,7 @@ class A2AVerificationInterceptor:
         hold the GIL (``ast.parse``, regex) can still delay the loop; the
         payload and code size caps (#33) bound those.
 
-        Raises ``TimeoutError`` when the budget is exceeded.
+        Raises ``_EngineTimeoutError`` when the budget is exceeded.
         """
         if not self._engine_slots.acquire(blocking=False):
             raise _EngineBusyError
@@ -347,8 +352,12 @@ class A2AVerificationInterceptor:
                 timeout=self.config.engine_timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
-            # asyncio.TimeoutError is only an alias of TimeoutError from 3.11.
-            raise TimeoutError from exc
+            # From 3.11 asyncio.TimeoutError is the builtin TimeoutError, so an
+            # engine that itself raised one lands here too: report that as the
+            # engine error it is, not as the budget running out.
+            if result.done() and not result.cancelled() and result.exception():
+                raise
+            raise _EngineTimeoutError from exc
         finally:
             abandoned.set()
 

@@ -90,6 +90,22 @@ class TestTimeout:
         assert claims["qwed_a2a"]["verdict"] == "error"
         assert get_metrics().total_errors == 1
 
+    async def test_engine_raised_timeout_error_is_an_engine_error(
+        self, crypto_service, trust_boundary, valid_financial_message, monkeypatch
+    ):
+        """A TimeoutError raised by the engine itself is not the budget
+        running out: it is reported as an engine error."""
+        icpt = _make(crypto_service, trust_boundary, timeout=5.0)
+
+        def engine(_message):
+            raise TimeoutError("engine-internal")
+
+        monkeypatch.setattr(icpt, "_route_to_engine", engine)
+        v = await icpt.intercept(valid_financial_message, trace_id="t_own_to")
+        assert v.status == VerdictStatus.ERROR
+        assert v.engine_used == "error_handler"
+        assert v.reason == "Verification engine raised TimeoutError - fail closed"
+
     async def test_within_budget_completes(
         self, crypto_service, trust_boundary, valid_financial_message
     ):
