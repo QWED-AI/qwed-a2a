@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Security
+
+- [#33](https://github.com/QWED-AI/qwed-a2a/issues/33) `max_payload_size_bytes`
+  is now enforced (it was declared but never read).
+  - `POST /a2a/intercept` rejects bodies over the limit + 64 KiB envelope
+    allowance with **413** before buffering or parsing (Content-Length fast
+    path plus a streaming cap for chunked bodies). It is built into the
+    router's route class, so no middleware wiring is needed.
+  - `intercept()` returns `blocked` (engine `size_limit`) for payloads whose
+    compact UTF-8 JSON exceeds the limit, before trust evaluation or any
+    engine runs; this also covers library callers.
+  - The code guard blocks code over 256 KiB before `ast.parse`.
+
 ### Breaking
 
 - [#13](https://github.com/QWED-AI/qwed-a2a/issues/13) `forwarded` verdict
