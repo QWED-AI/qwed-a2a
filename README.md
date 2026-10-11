@@ -385,6 +385,16 @@ app.include_router(wellknown_router)
 | `/a2a/metrics` | GET | Intercept metrics (verified, blocked, errors; `total_forwarded` kept as a deprecated alias of `total_verified`) |
 | `/.well-known/jwks.json` | GET | Public JWK set for JWT verification |
 
+### Request size limits
+
+Size limits are enforced by the router itself, so they apply wherever `router` is mounted, with no middleware to wire:
+
+- **HTTP body:** `POST /a2a/intercept` rejects bodies larger than `max_payload_size_bytes` + 64 KiB (envelope allowance) with **413**, *before* the body is buffered or parsed. A declared `Content-Length` is checked up front, and chunked bodies are capped as they stream in. An invalid `Content-Length` returns 400.
+- **Payload:** `intercept()` blocks any payload whose compact UTF-8 JSON exceeds `max_payload_size_bytes` (`blocked`, engine `size_limit`) before trust evaluation or any engine runs. This also covers direct library callers.
+- **Code:** the code guard blocks code over **256 KiB** before `ast.parse`, which amplifies memory by ~140-250x.
+
+Keep a reverse-proxy body limit as well (for example nginx `client_max_body_size`) as outer defense in depth.
+
 ### cURL Test
 
 ```bash
@@ -437,7 +447,7 @@ qwed-a2a/
 | `enable_logic_verification` | `bool` | `True` | Route logic assertions to contradiction checks |
 | `enable_code_verification` | `bool` | `True` | Route code payloads to regex security scanning |
 | `block_on_error` | `bool` | `True` | **Deprecated, no effect.** Engine errors always fail closed with `ERROR`; setting `False` emits a `DeprecationWarning` and logs a warning |
-| `max_payload_size_bytes` | `int` | `1,048,576` | Maximum payload size (1 MB) |
+| `max_payload_size_bytes` | `int` | `1,048,576` | Maximum payload size (1 MiB; allowed range 1 KiB-10 MiB). Enforced on the HTTP body (413) and in `intercept()` (`blocked`); see [Request size limits](#request-size-limits) |
 | `trusted_agents` | `List[str]` | `None` | Agent IDs pre-added to the trust boundary allowlist |
 
 ---

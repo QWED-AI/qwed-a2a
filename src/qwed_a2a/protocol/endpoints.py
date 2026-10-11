@@ -10,16 +10,94 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import Callable, Coroutine
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.routing import APIRoute
+from starlette.types import Message, Receive
 
 from qwed_a2a import __version__
 from qwed_a2a.interceptor import A2AVerificationInterceptor
 from qwed_a2a.protocol.schema import AgentMessage, InterceptorConfig
 from qwed_a2a.utils.telemetry import get_metrics, logger
 
-router = APIRouter(prefix="/a2a", tags=["A2A Interceptor"])
+# Request-body allowance on top of max_payload_size_bytes for the
+# AgentMessage envelope (agent IDs, payload_type, timestamp, metadata).
+ENVELOPE_ALLOWANCE_BYTES = 64 * 1024
+
+_BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+
+def _body_too_large(limit: int) -> HTTPException:
+    return HTTPException(
+        status_code=413,
+        detail=f"Request body exceeds the {limit}-byte limit.",
+    )
+
+
+def _reject_declared_oversize(request: Request, limit: int) -> None:
+    """Content-Length fast path: 400 if malformed, 413 if over the limit."""
+    declared = request.headers.get("content-length")
+    if declared is None:
+        return
+    # isascii(): str.isdigit() accepts non-ASCII digits such as superscript
+    # two, which int() rejects (a latin-1 header byte 0xB2 decodes to one).
+    if not (declared.isascii() and declared.isdigit()):
+        raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
+    if int(declared) > limit:
+        raise _body_too_large(limit)
+
+
+def _capped_receive(receive: Receive, limit: int) -> Receive:
+    """Wrap an ASGI receive so the streamed body cannot exceed ``limit``."""
+    received = 0
+
+    async def capped() -> Message:
+        nonlocal received
+        message = await receive()
+        if message["type"] == "http.request":
+            received += len(message.get("body", b""))
+            if received > limit:
+                raise _body_too_large(limit)
+        return message
+
+    return capped
+
+
+class _BodySizeLimitRoute(APIRoute):
+    """Enforce ``max_payload_size_bytes`` before the body is buffered (#33).
+
+    FastAPI reads and JSON-parses the whole body before any handler or
+    dependency runs, so a size check inside ``intercept()`` comes too late:
+    an oversized request has already spent the memory and CPU. This route
+    class rejects with 413 on a declared ``Content-Length`` over the limit,
+    and caps the streamed body (chunked uploads, or a lying header) as it
+    is received — the handler never runs for an oversized request. Being
+    the router's route class, it applies wherever the router is mounted;
+    no middleware wiring is needed.
+    """
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        original = super().get_route_handler()
+
+        async def size_limited_handler(request: Request) -> Response:
+            if request.method not in _BODY_METHODS:
+                return await original(request)
+            limit = (
+                get_interceptor().config.max_payload_size_bytes
+                + ENVELOPE_ALLOWANCE_BYTES
+            )
+            _reject_declared_oversize(request, limit)
+            capped = _capped_receive(request.receive, limit)
+            return await original(Request(request.scope, capped))
+
+        return size_limited_handler
+
+
+router = APIRouter(
+    prefix="/a2a", tags=["A2A Interceptor"], route_class=_BodySizeLimitRoute
+)
 
 # Thread-safe interceptor singleton
 _interceptor_lock = threading.Lock()

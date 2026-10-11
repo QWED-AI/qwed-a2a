@@ -8,6 +8,7 @@ This is the [QWED Core] module — all inter-agent messages flow through here.
 """
 
 import ast
+import json
 import re
 import time
 import unicodedata
@@ -101,6 +102,37 @@ class A2AVerificationInterceptor:
         """
         start_time = time.perf_counter()
 
+        # --- Step 0: Enforce payload size (#33) ---
+        # Over HTTP the router rejects oversized bodies before parsing; this
+        # covers direct library callers and is defense in depth.
+        limit = self.config.max_payload_size_bytes
+        try:
+            size = self._payload_size(message.payload)
+        except (TypeError, ValueError, RecursionError):
+            # Only reachable from library callers (HTTP payloads are parsed
+            # JSON): circular, too deeply nested, or otherwise unserializable.
+            # It cannot be measured or hashed, so it cannot be verified.
+            verdict = self._build_verdict(
+                trace_id=trace_id,
+                status=VerdictStatus.UNVERIFIABLE,
+                reason="Payload is not JSON-serializable; cannot verify",
+                engine="size_limit",
+                message=message,
+            )
+            self._record(verdict, message.sender_agent_id, start_time)
+            return verdict
+        if size > limit:
+            reason = f"Payload is {size} bytes; max_payload_size_bytes={limit}"
+            verdict = self._build_verdict(
+                trace_id=trace_id,
+                status=VerdictStatus.BLOCKED,
+                reason=reason,
+                engine="size_limit",
+                message=message,
+            )
+            self._record(verdict, message.sender_agent_id, start_time)
+            return verdict
+
         # --- Step 1: Enforce trust boundary ---
         allowed, rejection_reason = self.trust.evaluate(
             message.sender_agent_id,
@@ -186,6 +218,18 @@ class A2AVerificationInterceptor:
 
         self._record(verdict, message.sender_agent_id, start_time)
         return verdict
+
+    @staticmethod
+    def _payload_size(payload: dict[str, Any]) -> int:
+        """UTF-8 byte length of the payload's compact JSON form (#33).
+
+        Compact and unescaped so it tracks what a client actually sends;
+        surrogatepass so a lone surrogate in a string cannot crash the check.
+        """
+        encoded = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), default=str
+        )
+        return len(encoded.encode("utf-8", "surrogatepass"))
 
     def _route_to_engine(self, message: AgentMessage) -> dict[str, Any]:
         """
@@ -502,6 +546,9 @@ class A2AVerificationInterceptor:
             ),
         }
 
+    # Largest code payload the code guard will parse (#33, #122).
+    _MAX_CODE_BYTES: ClassVar[int] = 256 * 1024
+
     # ── AST dangerous node types ─────────────────────────────────────────────
     # Used by _verify_code_ast() for structural (not textual) analysis.
     # These are deterministic: if the AST contains one of these constructs
@@ -615,6 +662,29 @@ class A2AVerificationInterceptor:
                 "status": "heuristic_pass",
                 "engine": "code_guard",
                 "reason": "No code to analyze",
+            }
+
+        # Source must be text: ast.parse also accepts bytes, which would
+        # bypass the sub-cap below. JSON payloads only carry strings.
+        if not isinstance(code, str):
+            return {
+                "verified": False,
+                "status": "unverifiable",
+                "engine": "code_guard",
+                "reason": "CODE_EXECUTION payload code must be a string.",
+            }
+
+        # Code sub-cap (#33, #122): ast.parse amplifies heap ~140-250x, so
+        # even code inside max_payload_size_bytes can exhaust a small worker.
+        # Too large to analyse safely means cannot verify: fail closed.
+        if len(code.encode("utf-8", "surrogatepass")) > self._MAX_CODE_BYTES:
+            return {
+                "verified": False,
+                "engine": "code_guard",
+                "reason": (
+                    f"Code exceeds the {self._MAX_CODE_BYTES}-byte analysis "
+                    "limit — cannot verify"
+                ),
             }
 
         # ── Layer 1: AST structural analysis ──────────────────────────────────
