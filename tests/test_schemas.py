@@ -128,6 +128,44 @@ class TestInterceptorConfig:
         assert config.enable_code_verification is True
         assert config.block_on_error is True
 
+    def test_block_on_error_false_is_deprecated(self):
+        """block_on_error=False is accepted for compatibility but warns (#38)."""
+        with pytest.warns(DeprecationWarning, match="deprecated and ignored"):
+            InterceptorConfig(block_on_error=False)
+
+    def test_block_on_error_warning_points_at_caller(self):
+        """The warning is attributed to the caller, not pydantic internals, so
+        default filters and IDEs report it at the offending line."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            InterceptorConfig(block_on_error=False)
+            InterceptorConfig.model_validate({"block_on_error": False})
+
+        assert len(caught) == 2
+        for w in caught:
+            assert w.filename == __file__
+
+    def test_block_on_error_false_is_logged(self, caplog):
+        """Deprecation is also logged — DeprecationWarning is hidden by default
+        outside __main__, and a former fail-open deployment must notice."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="qwed_a2a"):
+            with pytest.warns(DeprecationWarning):
+                InterceptorConfig(block_on_error=False)
+        assert "block_on_error is deprecated and ignored" in caplog.text
+
+    def test_block_on_error_true_is_silent(self, caplog):
+        """The default value neither warns nor logs."""
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            InterceptorConfig(block_on_error=True)
+        assert "block_on_error" not in caplog.text
+
     def test_payload_size_bounds(self):
         """Payload size must be within bounds."""
         with pytest.raises(ValidationError):

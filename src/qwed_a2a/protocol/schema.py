@@ -5,11 +5,15 @@ Pydantic models enforcing typed contracts for Agent-to-Agent payloads.
 All inter-agent messages MUST conform to these schemas before processing.
 """
 
+import logging
+import warnings
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger("qwed_a2a")
 
 
 class PayloadType(str, Enum):
@@ -126,7 +130,11 @@ class InterceptorConfig(BaseModel):
     )
     block_on_error: bool = Field(
         default=True,
-        description="Block forwarding if verification encounters an internal error",
+        description=(
+            "Deprecated, no effect: engine errors always fail closed with an "
+            "ERROR verdict (#38). Kept for config compatibility; removal "
+            "tracked in #15."
+        ),
     )
     max_payload_size_bytes: int = Field(
         default=1_048_576,
@@ -137,3 +145,22 @@ class InterceptorConfig(BaseModel):
     trusted_agents: list[str] | None = Field(
         default=None, description="Allowlist of agent IDs that bypass verification"
     )
+
+    @field_validator("block_on_error")
+    @classmethod
+    def warn_block_on_error_ignored(cls, v: bool) -> bool:
+        """block_on_error=False used to fail open; say so loudly that it no longer does.
+
+        Warned AND logged: DeprecationWarning is hidden by default outside
+        __main__, but a deployment relying on the old fail-open must see
+        it in its logs. stacklevel=3 skips this validator and pydantic's
+        BaseModel.__init__/model_validate to land on the caller.
+        """
+        if v is False:
+            message = (
+                "InterceptorConfig.block_on_error is deprecated and ignored: "
+                "engine errors always fail closed with an ERROR verdict."
+            )
+            warnings.warn(message, DeprecationWarning, stacklevel=3)
+            logger.warning(message)
+        return v
