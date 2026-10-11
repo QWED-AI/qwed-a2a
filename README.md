@@ -408,7 +408,7 @@ qwed-a2a/
 | `enable_financial_verification` | `bool` | `True` | Route financial payloads to math verification |
 | `enable_logic_verification` | `bool` | `True` | Route logic assertions to contradiction checks |
 | `enable_code_verification` | `bool` | `True` | Route code payloads to regex security scanning |
-| `block_on_error` | `bool` | `True` | **Deprecated, no effect.** Engine errors always fail closed with `ERROR`; setting `False` emits a `DeprecationWarning` |
+| `block_on_error` | `bool` | `True` | **Deprecated, no effect.** Engine errors always fail closed with `ERROR`; setting `False` emits a `DeprecationWarning` and logs a warning |
 | `max_payload_size_bytes` | `int` | `1,048,576` | Maximum payload size (1 MB) |
 | `trusted_agents` | `List[str]` | `None` | Agent IDs pre-added to the trust boundary allowlist |
 
