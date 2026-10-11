@@ -62,6 +62,126 @@ class _EngineTimeoutError(Exception):
 _ASCII_INVISIBLE = dict.fromkeys((*range(0x09), *range(0x0E, 0x1C), 0x7F))
 
 
+_Binding = tuple[str, "str | None"]  # (module, member-or-None)
+
+
+class _Bindings:
+    """Every dangerous module or member each name may be bound to (#119).
+
+    Follows `import os as o`, `from posix import system as s` and simple
+    re-bindings: `x = os`, `y = x`, `s = os.system`, `e = eval`,
+    `g = getattr`, annotated (`x: T = os`), walrus (`(x := os)`) and
+    same-length tuple unpacking (`a, b = os, 1`).
+
+    Deliberately flow- and scope-insensitive: a name keeps EVERY binding it
+    is given anywhere (a later `x = builtins` does not erase `x = os`), and
+    dangerous builtin names always keep their builtin meaning. The
+    over-approximation fails closed. Propagation is a worklist over
+    assignment edges, so chains of any length and order resolve completely.
+    """
+
+    def __init__(
+        self,
+        receivers: dict[str, frozenset],
+        implicit: dict[str, frozenset[_Binding]],
+    ):
+        self._receivers = receivers
+        # What a name denotes with no assignment at all (read-only, shared).
+        self._implicit = implicit
+        self._values: dict[str, set[_Binding]] = {}
+        # source name -> [(target name, attribute taken on the way or None)]
+        self._edges: dict[str, list[tuple[str, str | None]]] = {}
+
+    def add_import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.asname and alias.name in self._receivers:
+                self._values.setdefault(alias.asname, set()).add((alias.name, None))
+
+    def add_import_from(self, node: ast.ImportFrom) -> None:
+        if node.module not in self._receivers:
+            return
+        for alias in node.names:
+            if alias.name != "*":
+                name = alias.asname or alias.name
+                self._values.setdefault(name, set()).add((node.module, alias.name))
+
+    def add_assignment(self, node: ast.AST) -> None:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                self._bind(target, node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value:
+            self._bind(node.target, node.value)
+
+    def _bind(self, target: ast.expr, value: ast.expr) -> None:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            if isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(
+                target.elts
+            ):
+                for sub_target, sub_value in zip(target.elts, value.elts):
+                    self._bind(sub_target, sub_value)
+            return
+        if not isinstance(target, ast.Name):
+            return
+        if isinstance(value, ast.Name):
+            self._edges.setdefault(value.id, []).append((target.id, None))
+        elif isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+            self._edges.setdefault(value.value.id, []).append((target.id, value.attr))
+
+    def propagate(self) -> None:
+        """Push every known binding along the assignment edges until no name
+        gains a new one. Each (name, binding) pair is processed once."""
+        work = [(name, b) for name in self._edges for b in self.values_of(name)]
+        while work:
+            source, binding = work.pop()
+            for target, attr in self._edges.get(source, ()):
+                new = self._follow(binding, attr)
+                if new is None:
+                    continue
+                known = self._values.setdefault(target, set())
+                if new not in known:
+                    known.add(new)
+                    work.append((target, new))
+
+    @staticmethod
+    def _follow(binding: _Binding, attr: str | None) -> _Binding | None:
+        """Binding of `target` after `target = source` (attr None) or
+        `target = source.attr`; None when it leaves what is tracked."""
+        if attr is None:
+            return binding
+        module, member = binding
+        return (module, attr) if member is None else None
+
+    @staticmethod
+    def implicit_bindings(
+        receivers: dict[str, frozenset], call_names: frozenset
+    ) -> dict[str, frozenset[_Binding]]:
+        """Dangerous module names denote themselves; dangerous builtins (and
+        getattr) keep their builtin meaning even when re-bound somewhere."""
+        implicit: dict[str, set[_Binding]] = {
+            name: {(name, None)} for name in receivers
+        }
+        for name in (*call_names, "getattr"):
+            implicit.setdefault(name, set()).add(("builtins", name))
+        return {name: frozenset(b) for name, b in implicit.items()}
+
+    def values_of(self, name: str) -> set[_Binding]:
+        values = self._values.get(name)
+        implicit = self._implicit.get(name, frozenset())
+        return values | implicit if values else set(implicit)
+
+    def resolve(self, expr: ast.expr) -> set[_Binding]:
+        """Every binding `name` or `name.attr` may denote."""
+        if isinstance(expr, ast.Name):
+            return self.values_of(expr.id)
+        if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name):
+            return {
+                (module, expr.attr)
+                for module, member in self.values_of(expr.value.id)
+                if member is None
+            }
+        return set()
+
+
 class A2AVerificationInterceptor:
     """
     Intercepts and verifies payloads sent between autonomous agents
@@ -722,14 +842,16 @@ class A2AVerificationInterceptor:
     #   thread.run()     — safe, receiver is not subprocess/os
     #   client.call()    — safe, receiver is not subprocess/os
     #   subprocess.run() — dangerous, receiver IS subprocess
-    # Receivers are resolved through import aliases and simple re-bindings
-    # (#119): `import os as o; o.system()`, `x = os; x.system()`,
-    # `s = os.system; s()`, `from posix import system as s; s()`.
+    # Receivers are resolved through every binding a name may have (#119,
+    # see _Bindings): `import os as o; o.system()`, `x = os; x.system()`,
+    # `s = os.system; s()`, `from posix import system as s; s()`, annotated,
+    # walrus and tuple-unpacking assignments, and aliases of getattr.
     # Known residual families (a blocklist over arbitrary code cannot be
     # sound, which is why a clean scan is only HEURISTIC_PASS): subscript
     # callees (`[eval][0]()`), modules reached through objects
-    # (`sys.modules['os']`), tuple-unpacking / walrus / attribute bindings,
-    # and unlisted side-effecting modules (shutil, pickle, runpy, code, socket).
+    # (`sys.modules['os']`), bindings made by for/with/function arguments or
+    # attributes of other objects, and unlisted side-effecting modules
+    # (shutil, pickle, runpy, code, socket).
     _DANGEROUS_RECEIVER_METHODS: ClassVar[dict[str, frozenset]] = {
         "subprocess": frozenset(
             {"run", "Popen", "call", "check_output", "check_call", "popen"}
@@ -740,6 +862,10 @@ class A2AVerificationInterceptor:
         "builtins": _DANGEROUS_CALL_NAMES,
         "__builtins__": _DANGEROUS_CALL_NAMES,
     }
+    # Bindings every name has before any assignment (built once).
+    _IMPLICIT_BINDINGS: ClassVar[dict[str, frozenset]] = _Bindings.implicit_bindings(
+        _DANGEROUS_RECEIVER_METHODS, _DANGEROUS_CALL_NAMES
+    )
     # Dangerous module import names (caught at ast.Import / ast.ImportFrom level)
     _DANGEROUS_IMPORTS: frozenset = frozenset(
         {
@@ -904,123 +1030,68 @@ class A2AVerificationInterceptor:
             "analysis": "ast+regex",
         }
 
-    # Re-binding hops followed when resolving names (x = os; y = x; ...).
-    _MAX_BINDING_PASSES: ClassVar[int] = 8
-
     def _scan_ast_threats(self, tree: ast.AST) -> list[str]:
         """Collect threats from an AST tree: dangerous calls and imports."""
-        bindings = self._collect_bindings(tree)
+        calls: list[ast.Call] = []
         threats: list[str] = []
-        for node in ast.walk(tree):
+        bindings = _Bindings(self._DANGEROUS_RECEIVER_METHODS, self._IMPLICIT_BINDINGS)
+        for node in ast.walk(tree):  # single pass over the tree
             if isinstance(node, ast.Call):
-                threats.extend(self._scan_ast_call(node, bindings))
+                calls.append(node)
             elif isinstance(node, ast.Import):
                 threats.extend(self._scan_ast_import(node))
+                bindings.add_import(node)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 threats.extend(self._scan_ast_import_from(node))
+                bindings.add_import_from(node)
+            else:
+                bindings.add_assignment(node)
+        bindings.propagate()
+        for call in calls:
+            threats.extend(self._scan_ast_call(call, bindings))
         return threats
 
-    def _collect_bindings(self, tree: ast.AST) -> dict[str, tuple[str, str | None]]:
-        """Map names bound to a dangerous module or one of its members (#119).
-
-        Follows ``import os as o``, ``from posix import system as s`` and
-        simple re-bindings (``x = os``, ``y = x``, ``s = os.system``,
-        ``e = eval``). Deliberately flow-insensitive: a name bound to a
-        dangerous module anywhere is treated as that module everywhere —
-        the over-approximation fails closed.
-        """
-        bindings: dict[str, tuple[str, str | None]] = {}
-        assigns: list[tuple[list[str], ast.expr]] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.asname and alias.name in self._DANGEROUS_RECEIVER_METHODS:
-                        bindings[alias.asname] = (alias.name, None)
-            elif (
-                isinstance(node, ast.ImportFrom)
-                and node.module in self._DANGEROUS_RECEIVER_METHODS
-            ):
-                for alias in node.names:
-                    if alias.name != "*":
-                        bindings[alias.asname or alias.name] = (node.module, alias.name)
-            elif isinstance(node, ast.Assign):
-                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
-                if targets:
-                    assigns.append((targets, node.value))
-        for _ in range(self._MAX_BINDING_PASSES):
-            changed = False
-            for targets, value in assigns:
-                resolved = self._resolve_binding(value, bindings)
-                for target in targets if resolved is not None else ():
-                    if bindings.get(target) != resolved:
-                        bindings[target] = resolved
-                        changed = True
-            if not changed:
-                break
-        return bindings
-
-    def _resolve_binding(
-        self, expr: ast.expr, bindings: dict[str, tuple[str, str | None]]
-    ) -> tuple[str, str | None] | None:
-        """Resolve ``name`` / ``name.attr`` to ``(module, member-or-None)``
-        when it denotes a dangerous module, one of its members, or a
-        dangerous builtin; None otherwise."""
-        if isinstance(expr, ast.Name):
-            if expr.id in bindings:
-                return bindings[expr.id]
-            if expr.id in self._DANGEROUS_RECEIVER_METHODS:
-                return (expr.id, None)
-            if expr.id in self._DANGEROUS_CALL_NAMES:
-                return ("builtins", expr.id)
-            return None
-        if isinstance(expr, ast.Attribute):
-            base = self._resolve_binding(expr.value, bindings)
-            if base is not None and base[1] is None:
-                return (base[0], expr.attr)
-        return None
-
-    def _scan_ast_call(
-        self, node: ast.Call, bindings: dict[str, tuple[str, str | None]]
-    ) -> list[str]:
+    def _scan_ast_call(self, node: ast.Call, bindings: "_Bindings") -> list[str]:
         """Detect dangerous function calls in a single AST Call node."""
         func = node.func
-        # Direct dangerous calls: eval(...), exec(...), compile(...)
-        if (
-            isinstance(func, ast.Name)
-            and func.id in self._DANGEROUS_CALL_NAMES
-            and func.id not in bindings
-        ):
+        # Direct dangerous calls: eval(...), exec(...), compile(...). Always
+        # flagged: a local re-binding elsewhere cannot hide the builtin.
+        if isinstance(func, ast.Name) and func.id in self._DANGEROUS_CALL_NAMES:
             return [f"call:{func.id}()"]
-        # Receiver-scoped calls, resolved through aliases and re-bindings:
-        # subprocess.run(...), o.system(...) with `import os as o`, s(...)
-        # with `s = os.system`. Only blocked for a known dangerous receiver —
-        # legitimate .run()/.call() on other objects stay clean.
-        target = self._resolve_binding(func, bindings)
-        if target is not None and target[1] is not None:
-            module, member = target
-            if member in self._DANGEROUS_RECEIVER_METHODS.get(module, frozenset()):
-                return [f"call:{module}.{member}()"]
-        if isinstance(func, ast.Name) and func.id == "getattr":
-            return self._scan_getattr_call(node, bindings)
-        return []
+        # Receiver-scoped calls, resolved through every binding the callee
+        # may have: subprocess.run(...), o.system(...) with `import os as o`,
+        # s(...) with `s = os.system`. Only known dangerous receivers are
+        # blocked; legitimate .run()/.call() on other objects stay clean.
+        targets = bindings.resolve(func)
+        threats = sorted(
+            f"call:{module}.{member}()"
+            for module, member in targets
+            if member in self._DANGEROUS_RECEIVER_METHODS.get(module, frozenset())
+        )
+        if ("builtins", "getattr") in targets:
+            threats.extend(self._scan_getattr_call(node, bindings))
+        return threats
 
-    def _scan_getattr_call(
-        self, node: ast.Call, bindings: dict[str, tuple[str, str | None]]
-    ) -> list[str]:
-        """getattr(os, "system") or getattr(os, name) on a dangerous module."""
+    def _scan_getattr_call(self, node: ast.Call, bindings: "_Bindings") -> list[str]:
+        """getattr(os, "system") or getattr(os, name) on a dangerous module,
+        through any alias of getattr."""
         if len(node.args) < 2:
             return []
-        base = self._resolve_binding(node.args[0], bindings)
-        if base is None or base[1] is not None:
-            return []
-        module, attr = base[0], node.args[1]
-        if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
-            if attr.value in self._DANGEROUS_RECEIVER_METHODS.get(module, frozenset()):
-                return [f"call:getattr({module}, {attr.value!r})"]
-            return []
-        # Attribute chosen at runtime on a dangerous module: cannot be
-        # bounded by a blocklist, so fail closed.
-        return [f"call:getattr({module}, <dynamic>)"]
+        attr = node.args[1]
+        constant = isinstance(attr, ast.Constant) and isinstance(attr.value, str)
+        threats = []
+        for module, member in bindings.resolve(node.args[0]):
+            if member is not None:
+                continue
+            if not constant:
+                # Attribute chosen at runtime on a dangerous module: cannot be
+                # bounded by a blocklist, so fail closed.
+                threats.append(f"call:getattr({module}, <dynamic>)")
+            elif attr.value in self._DANGEROUS_RECEIVER_METHODS.get(
+                module, frozenset()
+            ):
+                threats.append(f"call:getattr({module}, {attr.value!r})")
+        return sorted(threats)
 
     def _scan_ast_import(self, node: ast.Import) -> list[str]:
         """Detect dangerous module imports in a single AST Import node."""

@@ -197,7 +197,7 @@ Scans code payloads using a **dual-layer approach**:
 | Dangerous imports | `import subprocess`, `import importlib`, `import ctypes`; `from os import *`, `from os import system` |
 | `getattr` on a dangerous module | `getattr(os, "system")`, or any runtime-chosen name: `getattr(os, name)` |
 
-Receivers are resolved through import aliases and simple re-bindings (#119): `import os as o; o.system(...)`, `x = os; x.system(...)`, `s = os.system; s(...)`, `from posix import system as s; s(...)` and `e = eval; e(...)` are all blocked.
+Receivers are resolved through every binding a name may have (#119): `import os as o; o.system(...)`, `x = os; x.system(...)` (alias chains of any length and order, and a later re-assignment does not hide an earlier binding), `s = os.system; s(...)`, `from posix import system as s; s(...)`, `e = eval; e(...)`, `g = getattr; g(os, "system")`, and annotated (`x: T = os`), walrus (`(x := os)`) and tuple-unpacking (`a, b = os, 1`) bindings are all blocked. A local re-binding of `eval` cannot hide a builtin `eval(...)` call.
 
 **Layer 2 — Regex heuristic scan (secondary):** Catches obfuscation patterns that survive AST parsing:
 
@@ -212,7 +212,7 @@ Receivers are resolved through import aliases and simple re-bindings (#119): `im
 
 > **Result:** Returns `BLOCKED` if any threat is found (noting which layer detected it), or `HEURISTIC_PASS` if both layers are clean. A `HEURISTIC_PASS` is *not* a deterministic guarantee — it means no known dangerous constructs were found, and it is not admissible.
 >
-> **Known gaps:** a blocklist over arbitrary code cannot be made sound. Not detected today: subscript callees (`[eval][0](...)`, `d["e"](...)`), modules reached through objects (`sys.modules["os"]`), bindings via tuple unpacking, walrus or attributes of other objects, and unlisted modules with side effects (`shutil`, `pickle`, `runpy`, `code`, `socket`, ...). Never execute a `heuristic_pass` payload without your own sandbox or allowlist.
+> **Known gaps:** a blocklist over arbitrary code cannot be made sound. Not detected today: subscript callees (`[eval][0](...)`, `d["e"](...)`), modules reached through objects (`sys.modules["os"]`), bindings made by `for`/`with`/function arguments or attributes of other objects, and unlisted modules with side effects (`shutil`, `pickle`, `runpy`, `code`, `socket`, ...). Never execute a `heuristic_pass` payload without your own sandbox or allowlist.
 
 ### 📦 Passthrough (Unverifiable)
 

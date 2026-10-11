@@ -23,6 +23,17 @@ def _code(code: str) -> AgentMessage:
     )
 
 
+# 13-step alias chain whose assignments appear in reverse order, so a
+# pass-limited resolver would stop short of `a13`.
+LONG_REVERSED_CHAIN = (
+    "import os\n"
+    + "\n".join(
+        f"def f{i}():\n    global a{i + 1}\n    a{i + 1} = a{i}"
+        for i in range(12, 0, -1)
+    )
+    + "\na1 = os\na13.system('id')"
+)
+
 # (code, expected threat label)
 BYPASSES = [
     # The six primary repro shapes from #119.
@@ -52,6 +63,21 @@ BYPASSES = [
     ),
     # Non-dunder builtins namespace dict.
     ("import builtins\nbuiltins.__dict__['eval']('1')", "builtins_dict_access"),
+    # Review follow-ups on #166: every binding is kept and fully resolved.
+    ("import os\na, b = os, 1\na.system('id')", "call:os.system()"),
+    ("import os\nx: object = os\nx.system('id')", "call:os.system()"),
+    ("import os\nif (x := os):\n    x.system('id')", "call:os.system()"),
+    (
+        "import os, builtins\nx = os\nx.system('id')\nx = builtins",
+        "call:os.system()",
+    ),
+    ("import os\ndef f():\n    eval = os\neval('1')", "call:eval()"),
+    ("import os\ng = getattr\ng(os, 'system')('id')", "call:getattr(os, 'system')"),
+    (
+        "import os, builtins\nbuiltins.getattr(os, 'system')('id')",
+        "call:getattr(os, 'system')",
+    ),
+    (LONG_REVERSED_CHAIN, "call:os.system()"),
 ]
 
 CLEAN = [
@@ -112,7 +138,7 @@ class TestResidualFamiliesDocumented:
         [
             "[eval][0]('1')",  # subscript callee
             "import sys\nsys.modules['os'].system('id')",  # module via sys.modules
-            "import os\na, b = os, 1\na.system('id')",  # tuple-unpacking binding
+            "import os\nfor m in [os]:\n    m.system('id')",  # loop-variable binding
             "import shutil\nshutil.rmtree('/tmp/x')",  # unlisted module
         ],
     )

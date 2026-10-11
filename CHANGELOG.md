@@ -23,10 +23,11 @@
   closed at once with `error` (engine `engine_busy`). New
   `A2AVerificationInterceptor.close()` releases the pool at shutdown.
 - [#119](https://github.com/QWED-AI/qwed-a2a/issues/119) Code guard resolves
-  receivers through import aliases and simple re-bindings, so one-token
-  re-bindings of blocked calls no longer get a `heuristic_pass`
-  (`import os as o; o.system()`, `x = os`, `s = os.system`,
-  `from posix import system as s`, `e = eval`). Also blocked: `posix` / `nt` /
+  receivers through every binding a name may have, so re-bindings of blocked
+  calls no longer get a `heuristic_pass` (`import os as o; o.system()`,
+  `x = os` chains of any length or order, `s = os.system`,
+  `from posix import system as s`, `e = eval`, `g = getattr`, annotated,
+  walrus and tuple-unpacking bindings). Also blocked: `posix` / `nt` /
   `builtins` / `__builtins__` receivers, `os` exec/spawn/posix_spawn/startfile,
   star imports from those modules, `getattr` on a dangerous module (constant or
   runtime-chosen name), and `builtins.__dict__[`. Remaining blocklist gaps are
