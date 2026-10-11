@@ -47,8 +47,8 @@ class VerdictStatus(str, Enum):
 
     ``FORWARDED`` is a deprecated alias of ``VERIFIED`` (same member), and
     the legacy wire value ``"forwarded"`` still parses to ``VERIFIED`` so
-    tokens minted by 0.3.x issuers keep verifying through a rolling
-    deploy. Both will be removed in a future minor release.
+    tokens minted by 0.3.x issuers keep verifying here. Both will be
+    removed in a future minor release.
     """
 
     VERIFIED = "verified"
@@ -56,7 +56,7 @@ class VerdictStatus(str, Enum):
     UNVERIFIABLE = "unverifiable"
     HEURISTIC_PASS = "heuristic_pass"
     ERROR = "error"
-    FORWARDED = "verified"  # noqa: PIE796 — deliberate deprecated alias of VERIFIED (#13)
+    FORWARDED = "verified"  # noqa: PIE796 - deprecated alias (#13)
 
     @classmethod
     def _missing_(cls, value: object) -> "VerdictStatus | None":

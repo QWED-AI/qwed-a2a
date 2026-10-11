@@ -24,10 +24,15 @@
    `VerdictStatus.VERIFIED`.
 3. If you relied on logic assertions being admitted, they now return
    `heuristic_pass` and are not admissible — add your own policy for them.
-4. Rolling deploys are safe: the legacy value `"forwarded"` is still parsed
-   as `verified` on input (attestation claims, HTTP verdicts), so tokens
-   minted by 0.3.x replicas keep verifying. The alias and the legacy value
-   will be removed in a future minor release.
+4. Mixed-version deploys: upgraded readers still parse the legacy value
+   `"forwarded"` as `verified` (attestation claims, HTTP verdicts), so
+   tokens from 0.3.x issuers keep verifying. 0.3.x readers accept the new
+   `"verified"` claim at the signature/claims layer (0.3.x does not
+   validate the verdict value), but a 0.3.x consumer whose admission check
+   compares the claim to `"forwarded"` will deny new tokens — fail closed —
+   until it applies step 1 or 2. Upgrade consumers before, or together
+   with, issuers. The alias and the legacy value will be removed in a
+   future minor release.
 
 ## [0.3.0] — 2026-09-13
 

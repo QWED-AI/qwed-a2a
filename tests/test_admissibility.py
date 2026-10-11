@@ -113,7 +113,7 @@ class TestAttestationIsAdmissible:
             {"qwed_a2a": {}},
             {"qwed_a2a": {"verdict": None}},
             {"qwed_a2a": {"verdict": ["verified"]}},
-            {"qwed_a2a": {"verdict": "VERIFIED"}},
+            {"qwed_a2a": {"verdict": "FORWARDED"}},
             {"qwed_a2a": {"verdict": "VERIFIED"}},
             {"qwed_a2a": {"verdict": "Forwarded"}},
         ],

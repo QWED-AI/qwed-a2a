@@ -118,7 +118,7 @@ asyncio.run(main())
 
 **Output:**
 ```text
-Status:  verified ✅
+Status:  verified
 Engine:  finance_guard
 JWT:     eyJhbG...<truncated example token — not a real credential>
 ```
@@ -144,6 +144,8 @@ Every inter-agent message flows through **four deterministic stages**:
 │                        → Agent B                → Agent A        │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+> Only the finance guard's deterministic pass is `VERIFIED`. Every other outcome — `heuristic_pass` (code guard, and a logic check that found no contradiction), `unverifiable` and `error` — is not admissible; see [Verdicts & Admissibility](#-verdicts--admissibility).
 
 | Stage | Component | What It Does |
 |-------|-----------|-------------|
@@ -235,7 +237,7 @@ else:
     reject_or_escalate(verdict.status, verdict.reason)
 ```
 
-> **Renamed after 0.3.0:** `forwarded` is now `verified` (#13). `VerdictStatus.FORWARDED` remains a deprecated alias of `VerdictStatus.VERIFIED`, and the legacy wire value `"forwarded"` is still accepted on input (HTTP verdicts, attestation claims) so 0.3.x tokens verify during a rolling deploy. See the CHANGELOG for migration steps.
+> **Renamed after 0.3.0:** `forwarded` is now `verified` (#13). `VerdictStatus.FORWARDED` remains a deprecated alias of `VerdictStatus.VERIFIED`, and the legacy wire value `"forwarded"` is still accepted on input (HTTP verdicts, attestation claims), so 0.3.x tokens keep verifying on upgraded readers. 0.3.x readers accept the new `"verified"` claim at the signature/claims layer, but any 0.3.x consumer that compares the claim to `"forwarded"` will deny new tokens (fail closed) until it is updated. See the CHANGELOG for migration steps.
 
 ---
 
