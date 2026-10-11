@@ -25,6 +25,7 @@ import threading
 
 import pytest
 
+from qwed_a2a.protocol.schema import VerdictStatus
 from qwed_a2a.security.crypto import A2ACryptoService, JtiRegistry, AttestationContext
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -964,6 +965,74 @@ class TestClaimsValidation:
         assert is_valid is False
         assert claims is None
         assert "Invalid qwed_a2a claims" in error
+
+    @staticmethod
+    def _resign_with_verdict(crypto_service, trace_id, verdict):
+        """Sign a valid token, then re-sign it with a forged verdict claim."""
+        import jwt as pyjwt
+
+        token = _sign(crypto_service, trace_id=trace_id)
+        key_pair = crypto_service._ensure_key_pair()
+        raw = pyjwt.decode(token, options={"verify_signature": False})
+        raw["qwed_a2a"]["verdict"] = verdict
+        return pyjwt.encode(
+            raw, key_pair.private_key_pem, algorithm=A2ACryptoService.ALGORITHM
+        )
+
+    @pytest.mark.parametrize(
+        "verdict",
+        ["made-up", "VERIFIED", "Forwarded", "forwarded ", "", None, 1, ["forwarded"]],
+    )
+    def test_unknown_verdict_rejected_uniformly(
+        self, crypto_service, verifier, verdict
+    ):
+        """#130: a verdict outside VerdictStatus is rejected with the generic
+        claims error — same message as any malformed claim, no oracle."""
+        bad_token = self._resign_with_verdict(crypto_service, "t_bad_verdict", verdict)
+
+        is_valid, claims, error = verifier.verify_attestation(
+            bad_token, _default_context()
+        )
+        assert is_valid is False
+        assert claims is None
+        assert error == "Invalid qwed_a2a claims structure"
+
+    def test_unknown_verdict_does_not_consume_jti(self, crypto_service, verifier):
+        """Rejected verdicts fail before the replay check — no jti pre-burn."""
+        bad_token = self._resign_with_verdict(crypto_service, "t_bad_jti", "made-up")
+        size_before = len(verifier._jti_registry)
+        verifier.verify_attestation(bad_token, _default_context())
+        assert len(verifier._jti_registry) == size_before
+
+    @pytest.mark.parametrize("status", list(VerdictStatus))
+    def test_every_verdict_status_accepted(self, crypto_service, verifier, status):
+        """#130: every VerdictStatus member round-trips through sign/verify."""
+        token = _sign(
+            crypto_service, trace_id=f"t_ok_{status.value}", verdict_status=status.value
+        )
+
+        is_valid, claims, error = verifier.verify_attestation(token, _default_context())
+        assert is_valid is True, error
+        assert claims["qwed_a2a"]["verdict"] == status.value
+
+    def test_sign_accepts_enum_member(self, crypto_service, verifier):
+        """Passing the enum itself serialises to its plain string value."""
+        token = _sign(
+            crypto_service, trace_id="t_enum", verdict_status=VerdictStatus.BLOCKED
+        )
+
+        is_valid, claims, _ = verifier.verify_attestation(token, _default_context())
+        assert is_valid is True
+        assert claims["qwed_a2a"]["verdict"] == "blocked"
+
+    @pytest.mark.parametrize("verdict", ["made-up", "VERIFIED", ""])
+    def test_sign_rejects_unknown_verdict(self, crypto_service, verdict):
+        """#130: the issuer refuses to mint a token verify would reject, and
+        the refusal reserves no trace_id (a corrected retry still signs)."""
+        with pytest.raises(ValueError, match="unknown verdict_status"):
+            _sign(crypto_service, trace_id="t_sign_bad", verdict_status=verdict)
+
+        assert _sign(crypto_service, trace_id="t_sign_bad", verdict_status="forwarded")
 
 
 # ─── Audit continuity — persistent signing key ─────────────────────────────────
