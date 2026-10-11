@@ -128,6 +128,11 @@ class TestInterceptorConfig:
         assert config.enable_code_verification is True
         assert config.block_on_error is True
 
+    def test_block_on_error_false_is_deprecated(self):
+        """block_on_error=False is accepted for compatibility but warns (#38)."""
+        with pytest.warns(DeprecationWarning, match="deprecated and ignored"):
+            InterceptorConfig(block_on_error=False)
+
     def test_payload_size_bounds(self):
         """Payload size must be within bounds."""
         with pytest.raises(ValidationError):

@@ -207,6 +207,10 @@ Scans code payloads using a **dual-layer approach**:
 
 Messages with `payload_type` of `GENERAL` or `DATA_QUERY` have no verification engine. The interceptor returns an **UNVERIFIABLE** verdict — the message is not forwarded, and no JWT attestation is issued. This prevents false cryptographic claims about unverified content.
 
+### ⚠️ Engine Errors
+
+If a verification engine raises an unexpected exception, the interceptor always fails closed with an **ERROR** verdict — never `FORWARDED`. `ERROR` is distinct from `BLOCKED` (content checked and rejected): it means the content could not be checked, so treat it as block-equivalent and retry or alert. The `reason` names only the exception type. Errors are counted under `total_errors` in `/a2a/metrics`.
+
 ---
 
 ## 🔐 Zero-Trust Boundary
@@ -251,7 +255,7 @@ boundary.block_pair("agent-A", "agent-B")
 
 ## 🔏 Crypto Attestations
 
-FORWARDED, BLOCKED, and HEURISTIC_PASS verdicts include a signed **ES256 JWT attestation**. UNVERIFIABLE verdicts carry **no JWT** — issuing a signed token for unverified content would be a false cryptographic claim.
+FORWARDED, BLOCKED, HEURISTIC_PASS, and ERROR verdicts include a signed **ES256 JWT attestation** whose `verdict` claim states the outcome — a valid attestation is not an admission decision, so consumers must gate on that claim. UNVERIFIABLE verdicts carry **no JWT** — issuing a signed token for unverified content would be a false cryptographic claim.
 
 ```json
 {
@@ -404,7 +408,7 @@ qwed-a2a/
 | `enable_financial_verification` | `bool` | `True` | Route financial payloads to math verification |
 | `enable_logic_verification` | `bool` | `True` | Route logic assertions to contradiction checks |
 | `enable_code_verification` | `bool` | `True` | Route code payloads to regex security scanning |
-| `block_on_error` | `bool` | `True` | Block on internal engine errors (set `False` for shadow mode) |
+| `block_on_error` | `bool` | `True` | **Deprecated, no effect.** Engine errors always fail closed with `ERROR`; setting `False` emits a `DeprecationWarning` |
 | `max_payload_size_bytes` | `int` | `1,048,576` | Maximum payload size (1 MB) |
 | `trusted_agents` | `List[str]` | `None` | Agent IDs pre-added to the trust boundary allowlist |
 

@@ -5,6 +5,7 @@ Pydantic models enforcing typed contracts for Agent-to-Agent payloads.
 All inter-agent messages MUST conform to these schemas before processing.
 """
 
+import warnings
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -126,7 +127,11 @@ class InterceptorConfig(BaseModel):
     )
     block_on_error: bool = Field(
         default=True,
-        description="Block forwarding if verification encounters an internal error",
+        description=(
+            "Deprecated, no effect: engine errors always fail closed with an "
+            "ERROR verdict (#38). Kept for config compatibility; removal "
+            "tracked in #15."
+        ),
     )
     max_payload_size_bytes: int = Field(
         default=1_048_576,
@@ -137,3 +142,16 @@ class InterceptorConfig(BaseModel):
     trusted_agents: list[str] | None = Field(
         default=None, description="Allowlist of agent IDs that bypass verification"
     )
+
+    @field_validator("block_on_error")
+    @classmethod
+    def warn_block_on_error_ignored(cls, v: bool) -> bool:
+        """block_on_error=False used to fail open; say so loudly that it no longer does."""
+        if v is False:
+            warnings.warn(
+                "InterceptorConfig.block_on_error is deprecated and ignored: "
+                "engine errors always fail closed with an ERROR verdict.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return v

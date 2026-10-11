@@ -109,16 +109,20 @@ class A2AVerificationInterceptor:
         try:
             engine_result = self._route_to_engine(message)
         except Exception as exc:  # noqa: BLE001  # fail-closed: catch all engine errors
-            logger.error("Verification engine error: %s", exc)
-            status = (
-                VerdictStatus.BLOCKED
-                if self.config.block_on_error
-                else VerdictStatus.FORWARDED
+            # Always fail closed with a first-class ERROR (#38, #15): an engine
+            # crash is neither a pass (FORWARDED) nor a content rejection
+            # (BLOCKED). No config can turn it into a forward. Only the
+            # exception type is surfaced — its message may echo payload data.
+            exc_type = type(exc).__name__
+            logger.error(
+                "Verification engine error [%s] (trace_id=%s) - fail closed",
+                exc_type,
+                trace_id,
             )
             verdict = self._build_verdict(
                 trace_id=trace_id,
-                status=status,
-                reason=f"Verification engine error: {exc}",
+                status=VerdictStatus.ERROR,
+                reason=f"Verification engine raised {exc_type} - fail closed",
                 engine="error_handler",
                 message=message,
             )
@@ -661,7 +665,8 @@ class A2AVerificationInterceptor:
         attestation_jwt = None
 
         # UNVERIFIABLE — no JWT (no verification ran, issuing one would be false)
-        # All other statuses (FORWARDED, BLOCKED, HEURISTIC_PASS) get signed JWTs.
+        # All other statuses (FORWARDED, BLOCKED, HEURISTIC_PASS, ERROR) get
+        # signed JWTs; ERROR declares verdict_status="error", never "forwarded".
         # HEURISTIC_PASS JWTs declare verdict_status="heuristic_pass" in their
         # claims so downstream consumers know they received a heuristic result,
         # not a deterministic verification proof.
