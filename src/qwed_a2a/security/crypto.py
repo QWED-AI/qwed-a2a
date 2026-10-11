@@ -20,9 +20,15 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictStr,
+    ValidationError,
+    field_validator,
+)
 
-from qwed_a2a.protocol.schema import VerdictStatus
+from qwed_a2a.protocol.schema import LEGACY_FORWARDED_VALUE, VerdictStatus
 
 logger = logging.getLogger("qwed_a2a")
 
@@ -230,6 +236,14 @@ class _QwedA2AClaims(BaseModel):
     receiver: str
     deployment_id: str
     session_id: str | None = None
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def _accept_legacy_forwarded(cls, v: Any) -> Any:
+        """Map the pre-#13 "forwarded" to VERIFIED explicitly, so 0.3.x
+        tokens verify during a rolling deploy on every supported pydantic
+        version (not only those whose enum validation calls ``_missing_``)."""
+        return VerdictStatus.VERIFIED if v == LEGACY_FORWARDED_VALUE else v
 
 
 class _AttestationEnvelope(BaseModel):

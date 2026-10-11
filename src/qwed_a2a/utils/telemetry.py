@@ -34,7 +34,7 @@ class InterceptMetrics:
     """Aggregated metrics for interceptor performance monitoring."""
 
     total_intercepts: int = 0
-    total_forwarded: int = 0
+    total_verified: int = 0
     total_blocked: int = 0
     total_unverifiable: int = 0
     total_heuristic_pass: int = 0
@@ -42,6 +42,11 @@ class InterceptMetrics:
     total_latency_ms: float = 0.0
     by_engine: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     by_sender: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+
+    @property
+    def total_forwarded(self) -> int:
+        """Deprecated alias of ``total_verified`` (#13)."""
+        return self.total_verified
 
     @property
     def average_latency_ms(self) -> float:
@@ -58,7 +63,9 @@ class InterceptMetrics:
     def to_dict(self) -> dict[str, Any]:
         return {
             "total_intercepts": self.total_intercepts,
-            "total_forwarded": self.total_forwarded,
+            "total_verified": self.total_verified,
+            # Deprecated alias (#13): same count, kept for existing dashboards.
+            "total_forwarded": self.total_verified,
             "total_blocked": self.total_blocked,
             "total_unverifiable": self.total_unverifiable,
             "total_heuristic_pass": self.total_heuristic_pass,
@@ -134,8 +141,8 @@ def record_intercept(
     metrics.total_latency_ms += latency_ms
     metrics.by_sender[sender_id] = metrics.by_sender.get(sender_id, 0) + 1
 
-    if status == VerdictStatus.FORWARDED:
-        metrics.total_forwarded += 1
+    if status == VerdictStatus.VERIFIED:
+        metrics.total_verified += 1
     elif status == VerdictStatus.BLOCKED:
         metrics.total_blocked += 1
     elif status == VerdictStatus.UNVERIFIABLE:

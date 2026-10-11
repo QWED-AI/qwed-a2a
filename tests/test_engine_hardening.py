@@ -6,7 +6,7 @@ variants of a claim must not evade contradiction detection, and
 ``negated`` must be a real boolean.
 
 Finance: negative amounts, quantities and totals have no sign convention
-in this payload, so they are UNVERIFIABLE (fail closed), never FORWARDED.
+in this payload, so they are UNVERIFIABLE (fail closed), never VERIFIED.
 """
 
 import sys
@@ -74,7 +74,7 @@ class TestLogicNormalization:
         assert "contradiction" in verdict.reason.lower()
 
     async def test_audit_reproducer_blocked(self, interceptor):
-        """Exact payload from #86: previously forwarded with a signed JWT."""
+        """Exact payload from #86: previously admitted with a signed JWT."""
         verdict = await interceptor.intercept(
             _logic(
                 [
@@ -89,8 +89,9 @@ class TestLogicNormalization:
         assert verdict.status == VerdictStatus.BLOCKED
         assert verdict.details["contradictions"] == ["payment sent", "userisadmin"]
 
-    async def test_distinct_claims_still_forwarded(self, interceptor):
-        """Normalization must not merge genuinely different claims."""
+    async def test_distinct_claims_not_merged(self, interceptor):
+        """Normalization must not merge genuinely different claims: no
+        contradiction, so a (non-admissible) heuristic pass, not BLOCKED."""
         verdict = await interceptor.intercept(
             _logic(
                 [
@@ -100,7 +101,7 @@ class TestLogicNormalization:
             ),
             trace_id="t_logic_distinct",
         )
-        assert verdict.status == VerdictStatus.FORWARDED
+        assert verdict.status == VerdictStatus.HEURISTIC_PASS
 
     @pytest.mark.parametrize("claim", ["\u200b", " \u200b\ufeff ", "\t\n"])
     async def test_claim_empty_after_normalization_unverifiable(
@@ -195,7 +196,7 @@ class TestNormalizeClaimKey:
 @pytest.mark.asyncio
 class TestFinanceSignDomain:
     async def test_audit_reproducer_unverifiable(self, interceptor):
-        """Exact all-negative transaction from #86: previously forwarded."""
+        """Exact all-negative transaction from #86: previously admitted."""
         verdict = await interceptor.intercept(
             _finance(
                 "-150.00",
@@ -240,11 +241,11 @@ class TestFinanceSignDomain:
             _finance("10.00", [{"amount": "10.00"}, {"amount": "-0"}]),
             trace_id="t_fin_neg_zero",
         )
-        assert verdict.status == VerdictStatus.FORWARDED
+        assert verdict.status == VerdictStatus.VERIFIED
 
-    async def test_non_negative_still_forwarded(self, interceptor):
+    async def test_non_negative_still_verified(self, interceptor):
         verdict = await interceptor.intercept(
             _finance("25.00", [{"amount": "10.00", "quantity": 2}, {"amount": "5.00"}]),
             trace_id="t_fin_ok",
         )
-        assert verdict.status == VerdictStatus.FORWARDED
+        assert verdict.status == VerdictStatus.VERIFIED

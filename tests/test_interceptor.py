@@ -19,14 +19,14 @@ from qwed_a2a.protocol.schema import (
 class TestInterceptorFinancial:
     """Financial transaction verification tests."""
 
-    async def test_valid_financial_forwarded(
+    async def test_valid_financial_verified(
         self, interceptor, valid_financial_message
     ):
-        """Correct financial totals should be forwarded."""
+        """Correct financial totals are VERIFIED."""
         verdict = await interceptor.intercept(
             valid_financial_message, trace_id="t_fin_valid"
         )
-        assert verdict.status == VerdictStatus.FORWARDED
+        assert verdict.status == VerdictStatus.VERIFIED
         assert verdict.engine_used == "finance_guard"
         assert verdict.attestation_jwt is not None
         assert verdict.audit_trace_id == "t_fin_valid"
@@ -48,7 +48,7 @@ class TestInterceptorFinancial:
     async def test_empty_financial_returns_unverifiable(
         self, interceptor, empty_financial_message
     ):
-        """Empty financial payload must return UNVERIFIABLE, not FORWARDED."""
+        """Empty financial payload must return UNVERIFIABLE, not VERIFIED."""
         verdict = await interceptor.intercept(
             empty_financial_message, trace_id="t_fin_empty"
         )
@@ -126,7 +126,7 @@ class TestInterceptorFinancial:
     async def test_missing_amount_line_item_returns_unverifiable(
         self, interceptor, financial_missing_amount_line_item_message
     ):
-        """Line item without amount key returns UNVERIFIABLE, not FORWARDED."""
+        """Line item without amount key returns UNVERIFIABLE, not VERIFIED."""
         verdict = await interceptor.intercept(
             financial_missing_amount_line_item_message, trace_id="t_fin_missing_amt"
         )
@@ -227,7 +227,7 @@ class TestInterceptorLogic:
     async def test_empty_logic_returns_unverifiable(
         self, interceptor, empty_logic_message
     ):
-        """Empty logic assertions must return UNVERIFIABLE, not FORWARDED."""
+        """Empty logic assertions must return UNVERIFIABLE, not VERIFIED."""
         verdict = await interceptor.intercept(
             empty_logic_message, trace_id="t_logic_empty"
         )
@@ -266,7 +266,7 @@ class TestInterceptorLogic:
     async def test_missing_claim_assertion_returns_unverifiable(
         self, interceptor, logic_missing_claim_assertion_message
     ):
-        """Assertion without claim key returns UNVERIFIABLE, not FORWARDED."""
+        """Assertion without claim key returns UNVERIFIABLE, not VERIFIED."""
         verdict = await interceptor.intercept(
             logic_missing_claim_assertion_message, trace_id="t_logic_missing_claim"
         )
@@ -361,7 +361,7 @@ class TestInterceptorGeneral:
             await interceptor.intercept(financial_message, trace_id="t_fin_empty_token")
 
     async def test_general_passthrough(self, interceptor, general_message):
-        """General messages route to passthrough and return UNVERIFIABLE — not FORWARDED."""
+        """General messages route to passthrough and return UNVERIFIABLE — not VERIFIED."""
         verdict = await interceptor.intercept(general_message, trace_id="t_gen_pass")
         assert verdict.status == VerdictStatus.UNVERIFIABLE
         assert verdict.engine_used == "passthrough"
@@ -478,7 +478,7 @@ class TestEngineErrorVerdict:
     async def test_error_attestation_declares_error_verdict(
         self, interceptor, crypto_service, valid_financial_message, monkeypatch
     ):
-        """The signed claim says "error" — never "forwarded" — and still verifies."""
+        """The signed claim says "error" — never "verified" — and still verifies."""
         from qwed_a2a.security.crypto import AttestationContext
 
         _crash_financial_engine(monkeypatch, interceptor)
@@ -501,7 +501,7 @@ class TestEngineErrorVerdict:
     async def test_block_on_error_false_no_longer_fails_open(
         self, crypto_service, trust_boundary, valid_financial_message, monkeypatch
     ):
-        """The former shadow-mode flag is ignored: a crash is never FORWARDED."""
+        """The former shadow-mode flag is ignored: a crash is never VERIFIED."""
         with pytest.warns(DeprecationWarning, match="block_on_error"):
             config = InterceptorConfig(block_on_error=False)
         interceptor = A2AVerificationInterceptor(
@@ -545,6 +545,6 @@ class TestEngineErrorVerdict:
         await interceptor.intercept(valid_financial_message, trace_id="t_err_metrics")
         metrics = get_metrics()
         assert metrics.total_errors == 1
-        assert metrics.total_forwarded == 0
+        assert metrics.total_verified == 0
         assert metrics.total_blocked == 0
         assert metrics.by_engine.get("error_handler") == 1

@@ -80,10 +80,10 @@ class TestVerificationVerdict:
     def test_valid_verdict(self):
         """A well-formed verdict should pass validation."""
         v = VerificationVerdict(
-            status=VerdictStatus.FORWARDED,
+            status=VerdictStatus.VERIFIED,
             audit_trace_id="a2a_test123",
         )
-        assert v.status == VerdictStatus.FORWARDED
+        assert v.status == VerdictStatus.VERIFIED
         assert v.reason is None
 
     def test_blocked_verdict_can_have_reason(self):
@@ -108,12 +108,12 @@ class TestVerificationVerdict:
     def test_serialization_roundtrip(self):
         """Verdict should serialize and deserialize correctly."""
         v = VerificationVerdict(
-            status=VerdictStatus.FORWARDED,
+            status=VerdictStatus.VERIFIED,
             audit_trace_id="a2a_serial789",
             engine_used="finance_guard",
         )
         data = v.model_dump(mode="json")
-        assert data["status"] == "forwarded"
+        assert data["status"] == "verified"
         assert data["audit_trace_id"] == "a2a_serial789"
 
 

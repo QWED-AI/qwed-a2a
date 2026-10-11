@@ -2,13 +2,13 @@
 Tests for CodeGuard heuristic scan — issue #9 (A2A-005).
 
 Covers:
-- HEURISTIC_PASS is returned for clean code (not FORWARDED/VERIFIED)
+- HEURISTIC_PASS is returned for clean code (not VERIFIED)
 - AST analysis blocks direct dangerous calls
 - AST analysis blocks dangerous imports
 - Regex heuristics block dynamic/obfuscated access patterns
 - All bypass examples from the issue are handled
 - JWT is issued for HEURISTIC_PASS with trust_level=heuristic in claims
-- VerdictStatus.HEURISTIC_PASS exists and is distinct from FORWARDED
+- VerdictStatus.HEURISTIC_PASS exists and is distinct from VERIFIED
 - Telemetry records heuristic_pass
 """
 
@@ -56,8 +56,8 @@ class TestVerdictStatusEnum:
     def test_heuristic_pass_value(self):
         assert VerdictStatus.HEURISTIC_PASS == "heuristic_pass"
 
-    def test_heuristic_pass_is_not_forwarded(self):
-        assert VerdictStatus.HEURISTIC_PASS != VerdictStatus.FORWARDED
+    def test_heuristic_pass_is_not_verified(self):
+        assert VerdictStatus.HEURISTIC_PASS != VerdictStatus.VERIFIED
 
     def test_heuristic_pass_is_not_blocked(self):
         assert VerdictStatus.HEURISTIC_PASS != VerdictStatus.BLOCKED
@@ -78,10 +78,10 @@ class TestCleanCodeReturnsHeuristicPass:
 
     @pytest.mark.asyncio
     async def test_clean_code_is_not_forwarded(self, code_interceptor):
-        """FORWARDED must never be returned for a code payload."""
+        """VERIFIED must never be returned for a code payload."""
         msg = _code_message("def add(a, b): return a + b")
         verdict = await code_interceptor.intercept(msg, trace_id="t_not_forwarded")
-        assert verdict.status != VerdictStatus.FORWARDED
+        assert verdict.status != VerdictStatus.VERIFIED
 
     @pytest.mark.asyncio
     async def test_empty_code_is_heuristic_pass(self, code_interceptor):

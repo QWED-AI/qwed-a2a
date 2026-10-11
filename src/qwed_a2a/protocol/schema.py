@@ -29,13 +29,14 @@ class PayloadType(str, Enum):
 class VerdictStatus(str, Enum):
     """Possible outcomes of interceptor verification (#13).
 
-    The states are NOT interchangeable, and only ``FORWARDED`` is admissible
+    The states are NOT interchangeable, and only ``VERIFIED`` is admissible
     (see ``admissible`` / ``ADMISSIBLE_VERDICTS``):
 
-    - FORWARDED: a verification engine ran on the claims and they checked
-      out. The only admissible outcome.
-    - HEURISTIC_PASS: a heuristic scan (code guard) found nothing known to
-      be dangerous. Not a proof, and not admissible.
+    - VERIFIED: a deterministic engine (finance guard) recomputed the
+      claims and they checked out. The only admissible outcome.
+    - HEURISTIC_PASS: a heuristic check found no problem — code guard's
+      AST/regex scan, or logic guard's normalized P/not-P string match.
+      Not a proof, and not admissible.
     - UNVERIFIABLE: no engine could assess the payload (no engine for the
       type, or required fields missing). Unsigned; not admissible.
     - BLOCKED: verification failed or the trust boundary refused the
@@ -43,13 +44,25 @@ class VerdictStatus(str, Enum):
     - ERROR: the engine crashed before verification completed (possibly
       after partially processing the payload), so no outcome exists. Fail
       closed; not admissible.
+
+    ``FORWARDED`` is a deprecated alias of ``VERIFIED`` (same member), and
+    the legacy wire value ``"forwarded"`` still parses to ``VERIFIED`` so
+    tokens minted by 0.3.x issuers keep verifying through a rolling
+    deploy. Both will be removed in a future minor release.
     """
 
-    FORWARDED = "forwarded"
+    VERIFIED = "verified"
     BLOCKED = "blocked"
     UNVERIFIABLE = "unverifiable"
     HEURISTIC_PASS = "heuristic_pass"
     ERROR = "error"
+    FORWARDED = "verified"  # noqa: PIE796 — deliberate deprecated alias of VERIFIED (#13)
+
+    @classmethod
+    def _missing_(cls, value: object) -> "VerdictStatus | None":
+        if value == LEGACY_FORWARDED_VALUE:
+            return cls.VERIFIED
+        return None
 
     @property
     def admissible(self) -> bool:
@@ -57,10 +70,13 @@ class VerdictStatus(str, Enum):
         return self in ADMISSIBLE_VERDICTS
 
 
+# Pre-#13 wire value of VERIFIED, accepted on input only — never emitted.
+LEGACY_FORWARDED_VALUE = "forwarded"
+
 # The one place admissibility is defined. Consumers must gate on this (or
 # ``VerdictStatus.admissible``), never on ``status != BLOCKED``: that lazy
 # check admits HEURISTIC_PASS, UNVERIFIABLE and ERROR.
-ADMISSIBLE_VERDICTS: frozenset[VerdictStatus] = frozenset({VerdictStatus.FORWARDED})
+ADMISSIBLE_VERDICTS: frozenset[VerdictStatus] = frozenset({VerdictStatus.VERIFIED})
 
 
 class AgentMessage(BaseModel):

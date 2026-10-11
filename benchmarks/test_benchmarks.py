@@ -179,7 +179,7 @@ def test_sign_verdict(benchmark):
         counter["n"] += 1
         return crypto.sign_verdict(
             trace_id=f"trace-{counter['n']}",
-            verdict_status="forwarded",
+            verdict_status="verified",
             engine="finance_guard",
             sender_id="procurement-agent-001",
             receiver_id="treasury-agent-002",
@@ -205,7 +205,7 @@ def test_verify_attestation(benchmark):
     tokens = iter(
         crypto.sign_verdict(
             trace_id=f"verify-bench-{i}",
-            verdict_status="forwarded",
+            verdict_status="verified",
             engine="finance_guard",
             sender_id="procurement-agent-001",
             receiver_id="treasury-agent-002",
