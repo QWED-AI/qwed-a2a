@@ -22,6 +22,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
+from qwed_a2a.protocol.schema import VerdictStatus
+
 logger = logging.getLogger("qwed_a2a")
 
 try:
@@ -213,10 +215,16 @@ if not _DEPLOYMENT_ID:
 
 
 class _QwedA2AClaims(BaseModel):
-    """Typed model for the qwed_a2a nested claim block in attestation JWTs."""
+    """Typed model for the qwed_a2a nested claim block in attestation JWTs.
+
+    ``verdict`` is a closed ``VerdictStatus`` enum (#130): a token whose
+    verdict is not a known value fails structural validation with the
+    same generic error as any other malformed claim — no oracle on which
+    verdict strings exist.
+    """
 
     version: str
-    verdict: str
+    verdict: VerdictStatus
     engine: str
     sender: str
     receiver: str
@@ -679,7 +687,7 @@ class A2ACryptoService:
 
         Args:
             trace_id:       Unique trace ID (becomes jti).
-            verdict_status: Verdict outcome string (forwarded/blocked/unverifiable).
+            verdict_status: Verdict outcome — must be a ``VerdictStatus`` value.
             engine:         Verification engine name.
             sender_id:      Sending agent identifier.
             receiver_id:    Receiving agent identifier.
@@ -690,8 +698,17 @@ class A2ACryptoService:
             Signed JWT token string.
 
         Raises:
-            ValueError: trace_id already issued by this instance.
+            ValueError: trace_id already issued by this instance, or
+                verdict_status is not a ``VerdictStatus`` value.
         """
+        # Verdict before anything else (#130): never mint a token that
+        # verify_attestation() would reject, and never reserve a trace for one.
+        try:
+            verdict = VerdictStatus(verdict_status).value
+        except ValueError:
+            raise ValueError(
+                "unknown verdict_status: not a VerdictStatus value"
+            ) from None
         # Key first: a missing or misconfigured key must surface before the
         # trace is reserved — otherwise the retry burns on a phantom
         # duplicate for a token that was never minted.
@@ -712,7 +729,7 @@ class A2ACryptoService:
             "jti": trace_id,
             "qwed_a2a": {
                 "version": "1.0",
-                "verdict": verdict_status,
+                "verdict": verdict,
                 "engine": engine,
                 "sender": sender_id,
                 "receiver": receiver_id,
@@ -994,7 +1011,8 @@ class A2ACryptoService:
         1. Cryptographic signature check (ES256 / ECDSA P-256)
         2. Expiry check (exp claim)
         3. Required claims check (iss, sub, iat, exp, jti)
-        4. Structural validation of the qwed_a2a nested claim block
+        4. Structural validation of the qwed_a2a nested claim block,
+           including ``verdict`` against the closed ``VerdictStatus`` enum
         5. Deployment context check — deployment_id must match this
            instance for self-issued tokens, or the registered deployment
            ID of the trusted peer issuer
@@ -1013,6 +1031,9 @@ class A2ACryptoService:
             Tuple of (is_valid, decoded_claims, error_message).
             ``True`` means the token is cryptographically valid AND bound to
             the provided context — not just that the signature is valid.
+            It does NOT mean the message should be admitted: a genuine
+            ``blocked`` or ``heuristic_pass`` attestation also verifies.
+            Callers must gate admission on ``claims["qwed_a2a"]["verdict"]``.
         """
         if not HAS_CRYPTO:
             return False, None, "Cryptography backend unavailable"
