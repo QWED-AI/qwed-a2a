@@ -472,6 +472,8 @@ class TestEngineErrorVerdict:
             ctx.prec = 28
             verdict = await interceptor.intercept(message, trace_id="t_err_1e30")
         assert verdict.status == VerdictStatus.ERROR
+        assert verdict.engine_used == "error_handler"
+        assert "InvalidOperation" in verdict.reason
 
     async def test_error_attestation_declares_error_verdict(
         self, interceptor, crypto_service, valid_financial_message, monkeypatch
