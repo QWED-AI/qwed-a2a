@@ -1,7 +1,7 @@
 """
 Admissibility contract (#13).
 
-Only FORWARDED is admissible. HEURISTIC_PASS, UNVERIFIABLE, BLOCKED and
+Only VERIFIED is admissible. HEURISTIC_PASS, UNVERIFIABLE, BLOCKED and
 ERROR all deny — so the lazy ``status != "blocked"`` consumer check is
 never the right gate. The contract is exposed three ways that must agree:
 ``VerdictStatus.admissible``, ``VerificationVerdict.admissible`` (also in
@@ -19,12 +19,12 @@ from qwed_a2a.security.crypto import A2ACryptoService, AttestationContext
 
 
 class TestVerdictStatusAdmissible:
-    def test_only_forwarded_is_admissible(self):
-        assert ADMISSIBLE_VERDICTS == frozenset({VerdictStatus.FORWARDED})
+    def test_only_verified_is_admissible(self):
+        assert ADMISSIBLE_VERDICTS == frozenset({VerdictStatus.VERIFIED})
 
     @pytest.mark.parametrize("status", list(VerdictStatus))
     def test_property_matches_contract(self, status):
-        assert status.admissible is (status is VerdictStatus.FORWARDED)
+        assert status.admissible is (status is VerdictStatus.VERIFIED)
 
 
 class TestVerificationVerdictAdmissible:
@@ -50,7 +50,7 @@ class TestInterceptorAdmissible:
         self, interceptor, valid_financial_message
     ):
         v = await interceptor.intercept(valid_financial_message, trace_id="t_adm_fin")
-        assert v.status == VerdictStatus.FORWARDED
+        assert v.status == VerdictStatus.VERIFIED
         assert v.admissible is True
 
     async def test_blocked_not_admissible(
@@ -89,7 +89,11 @@ class TestAttestationIsAdmissible:
     def _claims(verdict):
         return {"qwed_a2a": {"verdict": verdict}}
 
-    def test_forwarded_claims_admissible(self):
+    def test_verified_claims_admissible(self):
+        assert A2ACryptoService.is_admissible(self._claims("verified")) is True
+
+    def test_legacy_forwarded_claims_admissible(self):
+        """0.3.x issuers emitted "forwarded" for the same outcome (#13)."""
         assert A2ACryptoService.is_admissible(self._claims("forwarded")) is True
 
     @pytest.mark.parametrize(
@@ -103,21 +107,22 @@ class TestAttestationIsAdmissible:
         [
             None,
             {},
-            "forwarded",
+            "verified",
             {"qwed_a2a": None},
-            {"qwed_a2a": "forwarded"},
+            {"qwed_a2a": "verified"},
             {"qwed_a2a": {}},
             {"qwed_a2a": {"verdict": None}},
-            {"qwed_a2a": {"verdict": ["forwarded"]}},
+            {"qwed_a2a": {"verdict": ["verified"]}},
             {"qwed_a2a": {"verdict": "FORWARDED"}},
-            {"qwed_a2a": {"verdict": "verified"}},
+            {"qwed_a2a": {"verdict": "VERIFIED"}},
+            {"qwed_a2a": {"verdict": "Forwarded"}},
         ],
     )
     def test_malformed_claims_fail_closed(self, claims):
         assert A2ACryptoService.is_admissible(claims) is False
 
     @pytest.mark.parametrize(
-        ("verdict", "expected"), [("forwarded", True), ("blocked", False)]
+        ("verdict", "expected"), [("verified", True), ("blocked", False)]
     )
     def test_round_trip_through_verify(self, crypto_service, verdict, expected):
         """A genuine blocked attestation verifies, yet is not admissible."""

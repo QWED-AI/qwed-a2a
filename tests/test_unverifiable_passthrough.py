@@ -1,6 +1,6 @@
 """
 Tests for issue #6 regression:
-GENERAL and DATA_QUERY passthrough must return UNVERIFIABLE, not FORWARDED.
+GENERAL and DATA_QUERY passthrough must return UNVERIFIABLE, not VERIFIED.
 No JWT attestation must be issued for UNVERIFIABLE verdicts.
 """
 
@@ -42,7 +42,7 @@ class TestUnverifiablePassthrough:
     Regression suite for A2A-002.
 
     GENERAL and DATA_QUERY have no verification engine — they must
-    return UNVERIFIABLE, not FORWARDED. No JWT may be issued for
+    return UNVERIFIABLE, not VERIFIED. No JWT may be issued for
     content that was never actually checked.
     """
 
@@ -50,7 +50,7 @@ class TestUnverifiablePassthrough:
     async def test_general_returns_unverifiable_not_forwarded(
         self, open_interceptor, general_message
     ):
-        """GENERAL payload must produce UNVERIFIABLE verdict, not FORWARDED."""
+        """GENERAL payload must produce UNVERIFIABLE verdict, not VERIFIED."""
         verdict = await open_interceptor.intercept(
             general_message, trace_id="t_general_unverifiable"
         )
@@ -63,7 +63,7 @@ class TestUnverifiablePassthrough:
     async def test_data_query_returns_unverifiable_not_forwarded(
         self, open_interceptor, data_query_message
     ):
-        """DATA_QUERY payload must produce UNVERIFIABLE verdict, not FORWARDED."""
+        """DATA_QUERY payload must produce UNVERIFIABLE verdict, not VERIFIED."""
         verdict = await open_interceptor.intercept(
             data_query_message, trace_id="t_data_query_unverifiable"
         )
@@ -148,7 +148,7 @@ class TestUnverifiablePassthrough:
         verdict = await open_interceptor.intercept(
             financial_msg, trace_id="t_financial_jwt_sanity"
         )
-        assert verdict.status == VerdictStatus.FORWARDED
+        assert verdict.status == VerdictStatus.VERIFIED
         assert (
             verdict.attestation_jwt is not None
         ), "Verified FINANCIAL payloads must still receive JWT attestation."

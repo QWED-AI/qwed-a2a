@@ -123,7 +123,7 @@ class A2AVerificationInterceptor:
             engine_result = self._route_to_engine(message)
         except Exception as exc:  # noqa: BLE001  # fail-closed: catch all engine errors
             # Always fail closed with a first-class ERROR (#38, #15): an engine
-            # crash is neither a pass (FORWARDED) nor a content rejection
+            # crash is neither a pass (VERIFIED) nor a content rejection
             # (BLOCKED). No config can turn it into a forward. Only the
             # exception type is surfaced — its message may echo payload data.
             exc_type = type(exc).__name__
@@ -164,7 +164,7 @@ class A2AVerificationInterceptor:
         elif engine_result["verified"]:
             verdict = self._build_verdict(
                 trace_id=trace_id,
-                status=VerdictStatus.FORWARDED,
+                status=VerdictStatus.VERIFIED,
                 reason=None,
                 engine=engine_result["engine"],
                 message=message,
@@ -400,9 +400,13 @@ class A2AVerificationInterceptor:
 
     def _verify_logic(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
-        Lightweight logic assertion verification.
+        Heuristic logic assertion check.
 
-        Checks for obvious contradictions in boolean claims.
+        Blocks direct contradictions (a claim both asserted and negated,
+        after normalization). Finding none is a HEURISTIC_PASS, not
+        VERIFIED (#13): string matching cannot see homoglyph variants or
+        semantic contradictions ("paid" vs "unpaid"), so absence of a
+        detected contradiction is not proof of consistency.
         """
         assertions = payload.get("assertions", [])
 
@@ -488,9 +492,14 @@ class A2AVerificationInterceptor:
             }
 
         return {
-            "verified": True,
+            "verified": False,
+            "status": "heuristic_pass",
             "engine": "logic_guard",
-            "reason": "No contradictions found in assertions",
+            "reason": (
+                "No direct contradictions found after normalization. This is "
+                "a heuristic result — homoglyph variants and semantic "
+                "contradictions are not detected."
+            ),
         }
 
     # ── AST dangerous node types ─────────────────────────────────────────────
@@ -737,8 +746,8 @@ class A2AVerificationInterceptor:
         attestation_jwt = None
 
         # UNVERIFIABLE — no JWT (no verification ran, issuing one would be false)
-        # All other statuses (FORWARDED, BLOCKED, HEURISTIC_PASS, ERROR) get
-        # signed JWTs; ERROR declares verdict_status="error", never "forwarded".
+        # All other statuses (VERIFIED, BLOCKED, HEURISTIC_PASS, ERROR) get
+        # signed JWTs; ERROR declares verdict_status="error", never "verified".
         # HEURISTIC_PASS JWTs declare verdict_status="heuristic_pass" in their
         # claims so downstream consumers know they received a heuristic result,
         # not a deterministic verification proof.

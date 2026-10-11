@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking
+
+- [#13](https://github.com/QWED-AI/qwed-a2a/issues/13) `forwarded` verdict
+  renamed to `verified`, and the logic guard no longer returns it.
+  - The finance guard's pass is now `verified` (wire value `"verified"` in
+    the HTTP verdict and the attestation `verdict` claim). It is the only
+    admissible verdict (`ADMISSIBLE_VERDICTS`).
+  - The logic guard's no-contradiction result is now `heuristic_pass`
+    (not admissible): string matching cannot detect semantic or homoglyph
+    contradictions, so it is not proof. Contradictions are still `blocked`.
+  - `/a2a/metrics` reports `total_verified`; `total_forwarded` is kept as a
+    deprecated alias with the same count.
+
+#### Migration
+
+1. Gate on `verdict.admissible` (or `A2ACryptoService.is_admissible(claims)`
+   for attestations) instead of comparing status strings.
+2. If you compare strings, replace `"forwarded"` with `"verified"`.
+   `VerdictStatus.FORWARDED` still works in Python: it is an alias of
+   `VerdictStatus.VERIFIED`.
+3. If you relied on logic assertions being admitted, they now return
+   `heuristic_pass` and are not admissible — add your own policy for them.
+4. Mixed-version deploys: upgraded readers still parse the legacy value
+   `"forwarded"` as `verified` (attestation claims, HTTP verdicts), so
+   tokens from 0.3.x issuers keep verifying. 0.3.x readers accept the new
+   `"verified"` claim at the signature/claims layer (0.3.x does not
+   validate the verdict value), but a 0.3.x consumer whose admission check
+   compares the claim to `"forwarded"` will deny new tokens — fail closed —
+   until it applies step 1 or 2. Upgrade consumers before, or together
+   with, issuers. The alias and the legacy value will be removed in a
+   future minor release.
+
 ## [0.3.0] — 2026-09-13
 
 Security-hardening release since 0.2.0. No new verification engines; three

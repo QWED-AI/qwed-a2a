@@ -109,7 +109,7 @@ message = AgentMessage(
 
 async def main():
     verdict = await interceptor.intercept(message, trace_id="demo_001")
-    print(f"Status:  {verdict.status.value}")    # forwarded ✅
+    print(f"Status:  {verdict.status.value}")    # verified ✅
     print(f"Engine:  {verdict.engine_used}")      # finance_guard
     print(f"JWT:     {verdict.attestation_jwt[:50]}...")
 
@@ -118,7 +118,7 @@ asyncio.run(main())
 
 **Output:**
 ```text
-Status:  forwarded ✅
+Status:  verified
 Engine:  finance_guard
 JWT:     eyJhbG...<truncated example token — not a real credential>
 ```
@@ -139,11 +139,13 @@ Every inter-agent message flows through **four deterministic stages**:
 │                                         │                        │
 │                              ┌──────────┴──────────┐            │
 │                              ▼                      ▼            │
-│                        ✅ FORWARDED             ❌ BLOCKED       │
+│                        ✅ VERIFIED              ❌ BLOCKED       │
 │                        + attestation            + reason         │
 │                        → Agent B                → Agent A        │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+> Only the finance guard's deterministic pass is `VERIFIED`. Every other outcome — `heuristic_pass` (code guard, and a logic check that found no contradiction), `unverifiable` and `error` — is not admissible; see [Verdicts & Admissibility](#-verdicts--admissibility).
 
 | Stage | Component | What It Does |
 |-------|-----------|-------------|
@@ -171,7 +173,7 @@ Recomputes totals from line items using `decimal.Decimal`. Catches math hallucin
 
 ### ⚖️ Logic Guard — Contradiction Detection
 
-Detects logical contradictions using set-based analysis. If a claim is both asserted and negated, the message is blocked.
+Detects logical contradictions using set-based analysis. If a claim is both asserted and negated, the message is blocked. Finding no contradiction returns **HEURISTIC_PASS**, not `VERIFIED`: string matching cannot see semantic contradictions (`"paid"` vs `"unpaid"`) or homoglyphs, so absence of a detected contradiction is not proof of consistency.
 
 ```python
 # Agent says "budget_approved" AND "budget_approved is false"
@@ -213,16 +215,16 @@ Messages with `payload_type` of `GENERAL` or `DATA_QUERY` have no verification e
 
 ### ⚠️ Engine Errors
 
-If a verification engine raises an unexpected exception, the interceptor always fails closed with an **ERROR** verdict — never `FORWARDED`. `ERROR` is distinct from `BLOCKED` (content checked and rejected): it means verification did not complete (the engine may have failed after partially processing the payload), so treat it as block-equivalent and retry or alert. The `reason` names only the exception type. Errors are counted under `total_errors` in `/a2a/metrics`.
+If a verification engine raises an unexpected exception, the interceptor always fails closed with an **ERROR** verdict — never `VERIFIED`. `ERROR` is distinct from `BLOCKED` (content checked and rejected): it means verification did not complete (the engine may have failed after partially processing the payload), so treat it as block-equivalent and retry or alert. The `reason` names only the exception type. Errors are counted under `total_errors` in `/a2a/metrics`.
 
 ### ✅ Verdicts & Admissibility
 
-Only `FORWARDED` is admissible. Gate on `verdict.admissible` (also present in the `/a2a/intercept` JSON response) — never on `status != "blocked"`, which would admit heuristic, unverifiable and errored messages.
+Only `VERIFIED` is admissible. Gate on `verdict.admissible` (also present in the `/a2a/intercept` JSON response) — never on `status != "blocked"`, which would admit heuristic, unverifiable and errored messages.
 
 | Status | Meaning | Signed JWT | Admissible |
 |--------|---------|:----------:|:----------:|
-| `forwarded` | An engine ran on the claims and they checked out | ✅ | ✅ |
-| `heuristic_pass` | Heuristic scan (code guard) found nothing known-dangerous — not a proof | ✅ | ❌ |
+| `verified` | A deterministic engine (finance guard) recomputed the claims and they checked out | ✅ | ✅ |
+| `heuristic_pass` | A heuristic check found no problem (code guard scan, logic guard contradiction match) — not a proof | ✅ | ❌ |
 | `blocked` | Verification failed, or the trust boundary refused the message | ✅ | ❌ |
 | `error` | The engine crashed before verification completed; no outcome was established (fail closed) | ✅ | ❌ |
 | `unverifiable` | No engine could assess the payload | ❌ | ❌ |
@@ -234,6 +236,8 @@ if verdict.admissible:
 else:
     reject_or_escalate(verdict.status, verdict.reason)
 ```
+
+> **Renamed after 0.3.0:** `forwarded` is now `verified` (#13). `VerdictStatus.FORWARDED` remains a deprecated alias of `VerdictStatus.VERIFIED`, and the legacy wire value `"forwarded"` is still accepted on input (HTTP verdicts, attestation claims), so 0.3.x tokens keep verifying on upgraded readers. 0.3.x readers accept the new `"verified"` claim at the signature/claims layer, but any 0.3.x consumer that compares the claim to `"forwarded"` will deny new tokens (fail closed) until it is updated. See the CHANGELOG for migration steps.
 
 ---
 
@@ -279,7 +283,7 @@ boundary.block_pair("agent-A", "agent-B")
 
 ## 🔏 Crypto Attestations
 
-FORWARDED, BLOCKED, HEURISTIC_PASS, and ERROR verdicts include a signed **ES256 JWT attestation** whose `verdict` claim states the outcome — a valid attestation is not an admission decision, so after `verify_attestation()` succeeds, gate on `A2ACryptoService.is_admissible(claims)` (fails closed on anything but an admissible verdict). UNVERIFIABLE verdicts carry **no JWT** — issuing a signed token for unverified content would be a false cryptographic claim.
+VERIFIED, BLOCKED, HEURISTIC_PASS, and ERROR verdicts include a signed **ES256 JWT attestation** whose `verdict` claim states the outcome — a valid attestation is not an admission decision, so after `verify_attestation()` succeeds, gate on `A2ACryptoService.is_admissible(claims)` (fails closed on anything but an admissible verdict). UNVERIFIABLE verdicts carry **no JWT** — issuing a signed token for unverified content would be a false cryptographic claim.
 
 ```json
 {
@@ -290,7 +294,7 @@ FORWARDED, BLOCKED, HEURISTIC_PASS, and ERROR verdicts include a signed **ES256 
   "jti": "a2a_trace_001",
   "qwed_a2a": {
     "version": "1.0",
-    "verdict": "forwarded",
+    "verdict": "verified",
     "engine": "finance_guard",
     "sender": "procurement-agent",
     "receiver": "treasury-agent"
@@ -378,7 +382,7 @@ app.include_router(wellknown_router)
 |----------|--------|-------------|
 | `/a2a/intercept` | POST | Verify agent message — returns verdict + attestation |
 | `/a2a/health` | GET | Service health check |
-| `/a2a/metrics` | GET | Intercept metrics (forwarded, blocked, errors) |
+| `/a2a/metrics` | GET | Intercept metrics (verified, blocked, errors; `total_forwarded` kept as a deprecated alias of `total_verified`) |
 | `/.well-known/jwks.json` | GET | Public JWK set for JWT verification |
 
 ### cURL Test

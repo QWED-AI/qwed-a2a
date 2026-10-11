@@ -191,7 +191,7 @@ class TestInterceptEndpoint:
         # #13: admissibility travels with the HTTP verdict; GENERAL is not.
         assert data["admissible"] is False
 
-    def test_valid_financial_forwarded(self, client, financial_payload, monkeypatch):
+    def test_valid_financial_verified(self, client, financial_payload, monkeypatch):
         # Both agents must be trusted so the zero-trust boundary allows the request
         monkeypatch.setenv(
             "QWED_A2A_TRUSTED_AGENTS", "procurement-agent,treasury-agent"
@@ -203,7 +203,7 @@ class TestInterceptEndpoint:
             headers=self._auth_headers("key-procurement"),
         )
         assert resp.status_code == 200
-        assert resp.json()["status"] == "forwarded"
+        assert resp.json()["status"] == "verified"
         assert resp.json()["admissible"] is True
 
     def test_malformed_body_returns_422(self, client, monkeypatch):
@@ -313,7 +313,7 @@ class TestInterceptAuth:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "forwarded"
+        assert body["status"] == "verified"
         claims = pyjwt.decode(
             body["attestation_jwt"], options={"verify_signature": False}
         )
@@ -377,7 +377,7 @@ class TestInterceptAuth:
             headers={"x-api-key": "key-padded"},
         )
         assert resp.status_code == 200
-        assert resp.json()["status"] == "forwarded"
+        assert resp.json()["status"] == "verified"
         claims = pyjwt.decode(
             resp.json()["attestation_jwt"], options={"verify_signature": False}
         )

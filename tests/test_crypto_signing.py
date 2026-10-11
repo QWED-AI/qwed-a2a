@@ -82,7 +82,7 @@ _TEST_PAYLOAD_HASH: str = A2ACryptoService.hash_content(
 
 def _sign(service: A2ACryptoService, trace_id: str = "t001", **kwargs) -> str:
     defaults = dict(
-        verdict_status="forwarded",
+        verdict_status="verified",
         engine="finance_guard",
         sender_id="agent-A",
         receiver_id="agent-B",
@@ -218,12 +218,12 @@ class TestJWTRoundTrip:
         assert is_valid is True, f"Unexpected failure: {error}"
         assert error is None
         assert claims["jti"] == "test_trace_001"
-        assert claims["qwed_a2a"]["verdict"] == "forwarded"
+        assert claims["qwed_a2a"]["verdict"] == "verified"
         assert claims["qwed_a2a"]["engine"] == "finance_guard"
 
     def test_different_traces_produce_different_tokens(self, crypto_service):
         """Two different verdicts should produce distinct JWTs."""
-        token_a = _sign(crypto_service, trace_id="trace_a", verdict_status="forwarded")
+        token_a = _sign(crypto_service, trace_id="trace_a", verdict_status="verified")
         token_b = _sign(crypto_service, trace_id="trace_b", verdict_status="blocked")
         assert token_a != token_b
 
@@ -537,7 +537,7 @@ class TestReplayPrevention:
             "jti": "t-slot-long",
             "qwed_a2a": {
                 "version": "1.0",
-                "verdict": "forwarded",
+                "verdict": "verified",
                 "engine": "e",
                 "sender": "a1",
                 "receiver": "b1",
@@ -577,7 +577,7 @@ class TestReplayPrevention:
             "jti": "t-badexp",
             "qwed_a2a": {
                 "version": "1.0",
-                "verdict": "forwarded",
+                "verdict": "verified",
                 "engine": "e",
                 "sender": "a1",
                 "receiver": "b1",
@@ -628,7 +628,7 @@ class TestReplayPrevention:
             "jti": "t-strexp",
             "qwed_a2a": {
                 "version": "1.0",
-                "verdict": "forwarded",
+                "verdict": "verified",
                 "engine": "e",
                 "sender": "a1",
                 "receiver": "b1",
@@ -668,7 +668,7 @@ class TestReplayPrevention:
             "jti": "t-infexp",
             "qwed_a2a": {
                 "version": "1.0",
-                "verdict": "forwarded",
+                "verdict": "verified",
                 "engine": "e",
                 "sender": "a1",
                 "receiver": "b1",
@@ -1032,7 +1032,7 @@ class TestClaimsValidation:
         with pytest.raises(ValueError, match="unknown verdict_status"):
             _sign(crypto_service, trace_id="t_sign_bad", verdict_status=verdict)
 
-        assert _sign(crypto_service, trace_id="t_sign_bad", verdict_status="forwarded")
+        assert _sign(crypto_service, trace_id="t_sign_bad", verdict_status="verified")
 
 
 # ─── Audit continuity — persistent signing key ─────────────────────────────────
@@ -1254,7 +1254,7 @@ class TestPeerIssuerVerification:
 
         token = svc.sign_verdict(
             trace_id=trace_id,
-            verdict_status="forwarded",
+            verdict_status="verified",
             engine="e",
             sender_id=sender,
             receiver_id=receiver,
@@ -1337,7 +1337,7 @@ class TestPeerIssuerVerification:
             "jti": jti,
             "qwed_a2a": {
                 "version": "1.0",
-                "verdict": "forwarded",
+                "verdict": "verified",
                 "engine": "e",
                 "sender": "a1",
                 "receiver": "b1",
@@ -1495,7 +1495,7 @@ class TestPeerIssuerVerification:
             "jti": "t-shared-key-evil",
             "qwed_a2a": {
                 "version": "1.0",
-                "verdict": "forwarded",
+                "verdict": "verified",
                 "engine": "e",
                 "sender": "a1",
                 "receiver": "b1",
@@ -1618,7 +1618,7 @@ class TestPeerIssuerVerification:
             "jti": "t-expired-order",
             "qwed_a2a": {
                 "version": "1.0",
-                "verdict": "forwarded",
+                "verdict": "verified",
                 "engine": "e",
                 "sender": "a1",
                 "receiver": "b1",
@@ -1693,7 +1693,7 @@ class TestPeerIssuerVerification:
             "jti": "t-shared",
             "qwed_a2a": {
                 "version": "1.0",
-                "verdict": "forwarded",
+                "verdict": "verified",
                 "engine": "e",
                 "sender": "a1",
                 "receiver": "b1",
@@ -1737,7 +1737,7 @@ class TestPeerIssuerVerification:
                 "jti": trace,
                 "qwed_a2a": {
                     "version": "1.0",
-                    "verdict": "forwarded",
+                    "verdict": "verified",
                     "engine": "e",
                     "sender": "a1",
                     "receiver": "b1",
