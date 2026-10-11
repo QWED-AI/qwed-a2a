@@ -432,35 +432,55 @@ class TestTrustBoundaryIntegration:
         assert "hallucination" in verdict.reason.lower()
 
 
-def _crashing_financial_message() -> AgentMessage:
-    """A line item that passes validation but overflows the cent quantize."""
-    return AgentMessage(
-        sender_agent_id="agent-a",
-        receiver_agent_id="agent-b",
-        payload_type=PayloadType.FINANCIAL_TRANSACTION,
-        payload={"data": {"claimed_total": 1, "line_items": [{"amount": "1E+30"}]}},
-    )
+def _crash_financial_engine(monkeypatch, interceptor) -> None:
+    """Make the finance engine raise, independent of the Decimal context."""
+    from decimal import InvalidOperation
+
+    def boom(_payload):
+        raise InvalidOperation("injected engine failure")
+
+    monkeypatch.setattr(interceptor, "_verify_financial", boom)
 
 
 @pytest.mark.asyncio
 class TestEngineErrorVerdict:
     """#38 / #15: engine exceptions always fail closed with a first-class ERROR."""
 
-    async def test_engine_crash_returns_error_not_blocked(self, interceptor):
-        """A real engine crash yields ERROR — distinct from a content BLOCKED."""
+    async def test_engine_crash_returns_error_not_blocked(
+        self, interceptor, valid_financial_message, monkeypatch
+    ):
+        """An engine crash yields ERROR — distinct from a content BLOCKED."""
+        _crash_financial_engine(monkeypatch, interceptor)
         verdict = await interceptor.intercept(
-            _crashing_financial_message(), trace_id="t_err_crash"
+            valid_financial_message, trace_id="t_err_crash"
         )
         assert verdict.status == VerdictStatus.ERROR
         assert verdict.engine_used == "error_handler"
 
+    async def test_real_quantize_overflow_returns_error(self, interceptor):
+        """Regression: the reported 1E+30 trigger crashes the real engine under
+        the default 28-digit context and must fail closed as ERROR."""
+        import decimal
+
+        message = AgentMessage(
+            sender_agent_id="agent-a",
+            receiver_agent_id="agent-b",
+            payload_type=PayloadType.FINANCIAL_TRANSACTION,
+            payload={"data": {"claimed_total": 1, "line_items": [{"amount": "1E+30"}]}},
+        )
+        with decimal.localcontext() as ctx:
+            ctx.prec = 28
+            verdict = await interceptor.intercept(message, trace_id="t_err_1e30")
+        assert verdict.status == VerdictStatus.ERROR
+
     async def test_error_attestation_declares_error_verdict(
-        self, interceptor, crypto_service
+        self, interceptor, crypto_service, valid_financial_message, monkeypatch
     ):
         """The signed claim says "error" — never "forwarded" — and still verifies."""
         from qwed_a2a.security.crypto import AttestationContext
 
-        message = _crashing_financial_message()
+        _crash_financial_engine(monkeypatch, interceptor)
+        message = valid_financial_message
         verdict = await interceptor.intercept(message, trace_id="t_err_jwt")
         assert verdict.attestation_jwt is not None
 
@@ -477,7 +497,7 @@ class TestEngineErrorVerdict:
         assert claims["qwed_a2a"]["engine"] == "error_handler"
 
     async def test_block_on_error_false_no_longer_fails_open(
-        self, crypto_service, trust_boundary
+        self, crypto_service, trust_boundary, valid_financial_message, monkeypatch
     ):
         """The former shadow-mode flag is ignored: a crash is never FORWARDED."""
         with pytest.warns(DeprecationWarning, match="block_on_error"):
@@ -487,8 +507,9 @@ class TestEngineErrorVerdict:
             crypto_service=crypto_service,
             trust_boundary=trust_boundary,
         )
+        _crash_financial_engine(monkeypatch, interceptor)
         verdict = await interceptor.intercept(
-            _crashing_financial_message(), trace_id="t_err_flag_off"
+            valid_financial_message, trace_id="t_err_flag_off"
         )
         assert verdict.status == VerdictStatus.ERROR
 
@@ -512,13 +533,14 @@ class TestEngineErrorVerdict:
         assert "secret-payload-fragment" not in caplog.text
         assert "ValueError" in caplog.text
 
-    async def test_error_counted_in_total_errors(self, interceptor):
+    async def test_error_counted_in_total_errors(
+        self, interceptor, valid_financial_message, monkeypatch
+    ):
         """total_errors is reachable; crashes no longer inflate forwards/blocks."""
         from qwed_a2a.utils.telemetry import get_metrics
 
-        await interceptor.intercept(
-            _crashing_financial_message(), trace_id="t_err_metrics"
-        )
+        _crash_financial_engine(monkeypatch, interceptor)
+        await interceptor.intercept(valid_financial_message, trace_id="t_err_metrics")
         metrics = get_metrics()
         assert metrics.total_errors == 1
         assert metrics.total_forwarded == 0
