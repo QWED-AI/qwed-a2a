@@ -324,11 +324,26 @@ class A2AVerificationInterceptor:
         except BaseException:
             self._engine_slots.release()
             raise
+        result = asyncio.wrap_future(work)
+
+        def consume_late_error(done: "asyncio.Future[Any]") -> None:
+            # After a timeout nobody awaits ``result``; read a late engine
+            # error here so asyncio does not report it as never retrieved.
+            # Type only — the message may echo payload data.
+            if done.cancelled() or done.exception() is None:
+                return
+            if abandoned.is_set():
+                logger.warning(
+                    "Abandoned engine run raised %s after its caller gave up",
+                    type(done.exception()).__name__,
+                )
+
+        result.add_done_callback(consume_late_error)
         try:
             # shield: a timeout must not cancel the pool future, or a
             # never-started job would skip its finally and leak its slot.
             return await asyncio.wait_for(
-                asyncio.shield(asyncio.wrap_future(work)),
+                asyncio.shield(result),
                 timeout=self.config.engine_timeout_seconds,
             )
         except asyncio.TimeoutError as exc:

@@ -279,6 +279,64 @@ class TestBoundedQueue:
         for _ in range(capacity):
             assert icpt._engine_slots.acquire(blocking=False)
 
+    async def test_late_engine_error_is_consumed_and_logged_by_type(
+        self, crypto_service, trust_boundary, valid_financial_message, caplog
+    ):
+        """An engine that raises after its caller timed out must not surface
+        as asyncio's "exception was never retrieved"; it is logged by type
+        only (the message may echo payload data)."""
+        import gc
+        import logging
+
+        reported = []
+        loop = asyncio.get_running_loop()
+        previous = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _l, ctx: reported.append(ctx["message"]))
+        icpt = _make(crypto_service, trust_boundary, timeout=0.1)
+
+        def late_failure(_message):
+            time.sleep(0.3)
+            raise ValueError("secret-payload-fragment")
+
+        icpt._route_to_engine = late_failure
+        try:
+            with caplog.at_level(logging.WARNING, logger="qwed_a2a"):
+                v = await icpt.intercept(valid_financial_message, trace_id="t_late")
+                assert v.engine_used == "engine_timeout"
+                await asyncio.sleep(0.5)
+                gc.collect()
+                await asyncio.sleep(0.05)
+        finally:
+            loop.set_exception_handler(previous)
+
+        assert reported == []
+        assert "Abandoned engine run raised ValueError" in caplog.text
+        assert "secret-payload-fragment" not in caplog.text
+
+    async def test_dropped_interceptor_threads_exit_without_close(
+        self, crypto_service, trust_boundary, valid_financial_message
+    ):
+        """Replacing an interceptor (e.g. configure_interceptor) needs no
+        close(): once unreferenced, its idle engine threads exit."""
+        import gc
+
+        def engine_threads():
+            return [
+                t for t in threading.enumerate() if t.name.startswith("qwed-a2a-engine")
+            ]
+
+        gc.collect()
+        before = len(engine_threads())
+        for i in range(3):
+            icpt = _make(crypto_service, trust_boundary, timeout=5.0)
+            await icpt.intercept(valid_financial_message, trace_id=f"t_drop_{i}")
+            del icpt
+        gc.collect()
+        deadline = time.perf_counter() + 2.0
+        while len(engine_threads()) > before and time.perf_counter() < deadline:
+            await asyncio.sleep(0.05)
+        assert len(engine_threads()) <= before
+
 
 @pytest.mark.asyncio
 async def test_health_answers_during_slow_intercept(monkeypatch):
