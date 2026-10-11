@@ -209,7 +209,7 @@ Messages with `payload_type` of `GENERAL` or `DATA_QUERY` have no verification e
 
 ### ⚠️ Engine Errors
 
-If a verification engine raises an unexpected exception, the interceptor always fails closed with an **ERROR** verdict — never `FORWARDED`. `ERROR` is distinct from `BLOCKED` (content checked and rejected): it means the content could not be checked, so treat it as block-equivalent and retry or alert. The `reason` names only the exception type. Errors are counted under `total_errors` in `/a2a/metrics`.
+If a verification engine raises an unexpected exception, the interceptor always fails closed with an **ERROR** verdict — never `FORWARDED`. `ERROR` is distinct from `BLOCKED` (content checked and rejected): it means verification did not complete (the engine may have failed after partially processing the payload), so treat it as block-equivalent and retry or alert. The `reason` names only the exception type. Errors are counted under `total_errors` in `/a2a/metrics`.
 
 ### ✅ Verdicts & Admissibility
 
@@ -220,7 +220,7 @@ Only `FORWARDED` is admissible. Gate on `verdict.admissible` (also present in th
 | `forwarded` | An engine ran on the claims and they checked out | ✅ | ✅ |
 | `heuristic_pass` | Heuristic scan (code guard) found nothing known-dangerous — not a proof | ✅ | ❌ |
 | `blocked` | Verification failed, or the trust boundary refused the message | ✅ | ❌ |
-| `error` | The engine crashed; content was never checked (fail closed) | ✅ | ❌ |
+| `error` | The engine crashed before verification completed; no outcome was established (fail closed) | ✅ | ❌ |
 | `unverifiable` | No engine could assess the payload | ❌ | ❌ |
 
 ```python

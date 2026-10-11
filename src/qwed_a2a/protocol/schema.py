@@ -40,7 +40,8 @@ class VerdictStatus(str, Enum):
       type, or required fields missing). Unsigned; not admissible.
     - BLOCKED: verification failed or the trust boundary refused the
       message. Not admissible.
-    - ERROR: the engine crashed, so the content was never checked. Fail
+    - ERROR: the engine crashed before verification completed (possibly
+      after partially processing the payload), so no outcome exists. Fail
       closed; not admissible.
     """
 
