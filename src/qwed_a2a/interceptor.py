@@ -33,6 +33,8 @@ _IGNORABLE_NON_CF = re.compile(
     "\ufe00-\ufe0f\uffa0\ufff0-\ufff8\U000e0000-\U000e0fff]"
 )
 # ASCII control characters that are not whitespace (NUL, BEL, DEL, ...).
+# 0x09-0x0D and 0x1C-0x1F are deliberately absent: str.isspace() is True
+# for them, so str.split() already turns them into word separators.
 _ASCII_INVISIBLE = dict.fromkeys((*range(0x09), *range(0x0E, 0x1C), 0x7F))
 
 

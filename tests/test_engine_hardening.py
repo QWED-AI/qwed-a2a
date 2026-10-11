@@ -153,6 +153,14 @@ class TestNormalizeClaimKey:
         assert leaked == []
 
     @pytest.mark.parametrize(
+        "cp", [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1C, 0x1D, 0x1E, 0x1F]
+    )
+    def test_ascii_whitespace_controls_separate_words(self, cp):
+        """Whitespace control chars (incl. the 0x1C-0x1F separators) act as
+        a single space, so "payment<sep>sent" collides with "payment sent"."""
+        assert self.normalize("payment" + chr(cp) + "sent") == "payment sent"
+
+    @pytest.mark.parametrize(
         "text",
         [
             "caf" + chr(0xE9),
