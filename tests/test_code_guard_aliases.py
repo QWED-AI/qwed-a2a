@@ -78,6 +78,14 @@ BYPASSES = [
         "call:getattr(os, 'system')",
     ),
     (LONG_REVERSED_CHAIN, "call:os.system()"),
+    (
+        "import os\n__builtins__.getattr(os, 'system')('id')",
+        "call:getattr(os, 'system')",
+    ),
+    (
+        "import os\ng = __builtins__.getattr\ng(os, 'system')('id')",
+        "call:getattr(os, 'system')",
+    ),
 ]
 
 CLEAN = [
@@ -117,6 +125,44 @@ class TestAliasBypassesBlocked:
         assert v.status == VerdictStatus.BLOCKED
         assert "import:subprocess" in v.details["threats"]
         assert "call:subprocess.run()" in v.details["threats"]
+
+
+class TestScanCostBounded:
+    """Untracked attributes must not multiply across aliases: many distinct
+    module attributes fanned out to many names stays linear (#166 review)."""
+
+    def test_attribute_fan_out_scans_quickly(self):
+        import time
+
+        from qwed_a2a.interceptor import A2AVerificationInterceptor
+
+        n = 3000
+        code = "\n".join(
+            ["import os"]
+            + [f"x = os.a{k}" for k in range(n)]
+            + [f"y{k} = x" for k in range(n)]
+        )
+        guard = A2AVerificationInterceptor.__new__(A2AVerificationInterceptor)
+        start = time.perf_counter()
+        result = guard._verify_code({"code": code})
+        # Unbounded propagation needs n*n = 9M binding pairs here (tens of
+        # seconds); the bounded resolver needs a fraction of a second.
+        assert time.perf_counter() - start < 3.0
+        assert result["status"] == "heuristic_pass"
+
+    def test_dangerous_member_still_tracked_through_fan_out(self):
+        from qwed_a2a.interceptor import A2AVerificationInterceptor
+
+        code = "\n".join(
+            ["import os"]
+            + [f"x = os.a{k}" for k in range(200)]
+            + ["x = os.system"]
+            + [f"y{k} = x" for k in range(200)]
+            + ["y199('id')"]
+        )
+        guard = A2AVerificationInterceptor.__new__(A2AVerificationInterceptor)
+        result = guard._verify_code({"code": code})
+        assert "call:os.system()" in result["threats"]
 
 
 @pytest.mark.asyncio

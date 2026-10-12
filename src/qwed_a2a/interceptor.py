@@ -63,6 +63,10 @@ _ASCII_INVISIBLE = dict.fromkeys((*range(0x09), *range(0x0E, 0x1C), 0x7F))
 
 
 _Binding = tuple[str, "str | None"]  # (module, member-or-None)
+# Names under which the builtins module is reachable without an import.
+_BUILTINS_MODULES = frozenset({"builtins", "__builtins__"})
+# getattr reached as a builtin, as builtins.getattr or __builtins__.getattr.
+_GETATTR_BINDINGS = frozenset((module, "getattr") for module in _BUILTINS_MODULES)
 
 
 class _Bindings:
@@ -78,6 +82,11 @@ class _Bindings:
     dangerous builtin names always keep their builtin meaning. The
     over-approximation fails closed. Propagation is a worklist over
     assignment edges, so chains of any length and order resolve completely.
+
+    Bounded: only members the scanner checks are kept (a dangerous method of
+    the module, or getattr on a builtins module), so a name holds at most a
+    few dozen bindings and propagation is linear in the number of
+    assignments; `x = os.a0 ... os.a9999` cannot blow up the scan.
     """
 
     def __init__(
@@ -101,7 +110,7 @@ class _Bindings:
         if node.module not in self._receivers:
             return
         for alias in node.names:
-            if alias.name != "*":
+            if alias.name != "*" and self._tracked(node.module, alias.name):
                 name = alias.asname or alias.name
                 self._values.setdefault(name, set()).add((node.module, alias.name))
 
@@ -142,14 +151,21 @@ class _Bindings:
                     known.add(new)
                     work.append((target, new))
 
-    @staticmethod
-    def _follow(binding: _Binding, attr: str | None) -> _Binding | None:
+    def _tracked(self, module: str, member: str) -> bool:
+        """Only members the scanner can act on are worth a binding."""
+        if member == "getattr":
+            return module in _BUILTINS_MODULES
+        return member in self._receivers.get(module, frozenset())
+
+    def _follow(self, binding: _Binding, attr: str | None) -> _Binding | None:
         """Binding of `target` after `target = source` (attr None) or
         `target = source.attr`; None when it leaves what is tracked."""
         if attr is None:
             return binding
         module, member = binding
-        return (module, attr) if member is None else None
+        if member is not None or not self._tracked(module, attr):
+            return None
+        return (module, attr)
 
     @staticmethod
     def implicit_bindings(
@@ -1068,7 +1084,7 @@ class A2AVerificationInterceptor:
             for module, member in targets
             if member in self._DANGEROUS_RECEIVER_METHODS.get(module, frozenset())
         )
-        if ("builtins", "getattr") in targets:
+        if targets & _GETATTR_BINDINGS:
             threats.extend(self._scan_getattr_call(node, bindings))
         return threats
 
