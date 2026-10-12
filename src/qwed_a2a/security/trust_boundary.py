@@ -11,6 +11,7 @@ import json
 import math
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from qwed_a2a.utils.telemetry import logger
@@ -26,6 +27,11 @@ def _redact(agent_id: str) -> str:
     if len(agent_id) <= 4:
         return "****"
     return f"{agent_id[:2]}***{agent_id[-2:]}"
+
+
+def _snapshot(scope: Iterable[str] | None) -> frozenset[str] | None:
+    """Immutable copy of a trust scope (None means unrestricted)."""
+    return None if scope is None else frozenset(scope)
 
 
 def _locked(method):
@@ -74,8 +80,11 @@ class TrustEntry:
     """Scoped, expiring trust grant for a single agent."""
 
     agent_id: str
-    allowed_receivers: set[str] | None = None
-    allowed_payload_types: set[str] | None = None
+    # Immutable: the boundary snapshots scopes at grant time, so a caller
+    # mutating its own set later cannot change authorization outside the
+    # boundary's lock (#133).
+    allowed_receivers: frozenset[str] | None = None
+    allowed_payload_types: frozenset[str] | None = None
     valid_until: float | None = None
     granted_by: str = "config"
     granted_at: float = field(default_factory=time.time)
@@ -148,16 +157,20 @@ class TrustBoundary:
     def trust_agent(
         self,
         agent_id: str,
-        allowed_receivers: set[str] | None = None,
-        allowed_payload_types: set[str] | None = None,
+        allowed_receivers: Iterable[str] | None = None,
+        allowed_payload_types: Iterable[str] | None = None,
         valid_until: float | None = None,
         granted_by: str = "config",
     ) -> None:
-        """Grant scoped, expiring trust to an agent."""
+        """Grant scoped, expiring trust to an agent.
+
+        Scopes are copied into frozensets: later changes to the caller's
+        collections do not alter the grant.
+        """
         entry = TrustEntry(
             agent_id=agent_id,
-            allowed_receivers=allowed_receivers,
-            allowed_payload_types=allowed_payload_types,
+            allowed_receivers=_snapshot(allowed_receivers),
+            allowed_payload_types=_snapshot(allowed_payload_types),
             valid_until=valid_until,
             granted_by=granted_by,
         )
