@@ -505,10 +505,14 @@ def _load_trusted_issuers(explicit: dict[str, Any] | None) -> dict[str, dict[str
 
 class A2ACryptoService:
     """
-    Handles cryptographic signing and verification for A2A payloads.
+    Signs and verifies the interceptor's own verdict attestations.
 
     - Signs verification verdicts with short-lived ES256 JWT attestations.
-    - Verifies incoming agent message signatures.
+    - Verifies attestations issued by this deployment or a registered peer
+      issuer (``verify_attestation``), bound to the request context.
+    - Does NOT verify signatures from sending agents: no sender-signature
+      check exists. Over HTTP, sender identity comes from the per-agent API
+      key (#106); library callers own identity binding (#83).
     - Manages ECDSA P-256 key pairs.
     - Enforces jti replay prevention via JtiRegistry (consumption side;
       issuance dup-detection lives in a separate per-instance record so
@@ -1037,7 +1041,12 @@ class A2ACryptoService:
         trusted_issuers: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any] | None, str | None]:
         """
-        Verify a JWT attestation token against the current request context.
+        Verify a verdict attestation against the current request context.
+
+        The token must have been issued by this deployment or a registered
+        peer issuer — this checks the interceptor's own verdict, not a
+        signature from the sending agent. Context binding (step 6) came in
+        with #14; sending-agent signatures are not verified anywhere (#19).
 
         Verification tries every configured key until one verifies the
         signature — the local key first when configured, then each peer
