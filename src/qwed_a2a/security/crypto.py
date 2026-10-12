@@ -1045,7 +1045,8 @@ class A2ACryptoService:
 
         The token must have been issued by this deployment or a registered
         peer issuer — this checks the interceptor's own verdict, not a
-        signature from the sending agent.
+        signature from the sending agent. Context binding (step 6) came in
+        with #14; sending-agent signatures are not verified anywhere (#19).
 
         Verification tries every configured key until one verifies the
         signature — the local key first when configured, then each peer
