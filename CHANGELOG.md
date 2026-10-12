@@ -32,6 +32,11 @@
   star imports from those modules, `getattr` on a dangerous module (constant or
   runtime-chosen name), and `builtins.__dict__[`. Remaining blocklist gaps are
   documented; a clean scan stays a non-admissible `heuristic_pass`.
+- [#133](https://github.com/QWED-AI/qwed-a2a/issues/133) `TrustBoundary` is
+  thread-safe: every public method runs under a re-entrant instance lock.
+  Concurrent threads sharing an interceptor could admit a pair past its rate
+  limit (non-atomic token-bucket update) or fail with
+  `RuntimeError: dictionary changed size during iteration` during eviction.
 
 ### Breaking
 

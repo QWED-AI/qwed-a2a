@@ -6,8 +6,10 @@ Manages agent allowlists, blocklists, and token-bucket rate limiting
 with automatic eviction of cold pairs.
 """
 
+import functools
 import json
 import math
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -24,6 +26,23 @@ def _redact(agent_id: str) -> str:
     if len(agent_id) <= 4:
         return "****"
     return f"{agent_id[:2]}***{agent_id[-2:]}"
+
+
+def _locked(method):
+    """Run a TrustBoundary method under the instance lock (#133).
+
+    The boundary is shared by every request on an interceptor; threaded
+    callers (sync frameworks, admin threads calling trust/revoke) must not
+    interleave the read-modify-write of token buckets or the dict scans
+    and deletes of eviction.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 @dataclass
@@ -100,6 +119,8 @@ class TrustBoundary:
     ):
         self.max_requests_per_minute = max_requests_per_minute
         self.default_allow = default_allow
+        # Re-entrant: load_from_env calls trust_agent while holding it.
+        self._lock = threading.RLock()
 
         # Agent-level controls
         self._blocked_agents: set[str] = set()
@@ -116,12 +137,14 @@ class TrustBoundary:
         self._last_eviction: float = -float("inf")
         self._last_trust_eviction_mono: float = -float("inf")
 
+    @_locked
     def block_agent(self, agent_id: str) -> None:
         """Add an agent to the global blocklist."""
         self._blocked_agents.add(agent_id)
         self._trusted_agents.pop(agent_id, None)
         logger.warning("Agent blocked: agent=%s", _redact(agent_id))
 
+    @_locked
     def trust_agent(
         self,
         agent_id: str,
@@ -148,6 +171,7 @@ class TrustBoundary:
             granted_by,
         )
 
+    @_locked
     def revoke_agent(self, agent_id: str, revoked_by: str = "operator") -> bool:
         """Revoke trust for an agent at runtime. Returns True if agent was trusted."""
         if agent_id in self._trusted_agents:
@@ -160,14 +184,17 @@ class TrustBoundary:
             return True
         return False
 
+    @_locked
     def block_pair(self, sender_id: str, receiver_id: str) -> None:
         """Block a specific agent-to-agent communication pair."""
         self._blocked_pairs.add((sender_id, receiver_id))
 
+    @_locked
     def unblock_pair(self, sender_id: str, receiver_id: str) -> None:
         """Unblock a specific agent pair."""
         self._blocked_pairs.discard((sender_id, receiver_id))
 
+    @_locked
     def is_trusted(self, agent_id: str, now: float | None = None) -> bool:
         """Check if an agent has a valid (non-expired) trust entry."""
         if now is None:
@@ -313,6 +340,7 @@ class TrustBoundary:
 
         return None
 
+    @_locked
     def evaluate(
         self, sender_id: str, receiver_id: str, payload_type: str | None = None
     ) -> tuple[bool, str | None]:
@@ -393,6 +421,7 @@ class TrustBoundary:
     _SKIP = object()
 
     @property
+    @_locked
     def trusted_agent_count(self) -> int:
         """Return the number of currently trusted (non-expired) agents."""
         return self._count_trusted_agents(time.time())
@@ -487,6 +516,7 @@ class TrustBoundary:
             return self._SKIP
         return set(raw)
 
+    @_locked
     def load_from_env(self, env_value: str, granted_by: str = "env") -> None:
         """Load scoped trust entries from a JSON or comma-separated env var.
 
