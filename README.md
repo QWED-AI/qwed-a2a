@@ -42,7 +42,7 @@ QWED A2A is a **verification interceptor** for Google's [Agent-to-Agent (A2A) pr
 | Without A2A | With A2A |
 |-------------|----------|
 | Agent sends wrong total → **Propagates** downstream | **Blocked** — math hallucination detected |
-| Agent sends `os.system()` code → **Executes** on receiver | **Blocked** — dangerous pattern detected |
+| Agent sends `os.system()` code → **Executes** on receiver | **Blocked** — known dangerous constructs detected (heuristic: a clean scan is `heuristic_pass`, never `verified`) |
 | Agent makes contradictory claims → **Accepted** silently | **Blocked** — logical contradiction caught |
 | Rogue agent floods messages → **No limit** — DoS possible | **Rate-limited** — token bucket enforced |
 | No audit trail → Nothing to prove | **JWT attestation** — cryptographic proof of every decision |
@@ -192,22 +192,27 @@ Scans code payloads using a **dual-layer approach**:
 
 | Threat | Example |
 |--------|---------|
-| Dangerous calls | `eval(`, `exec(`, `compile(`, `__import__(` |
-| Dangerous receiver methods | `subprocess.run(`, `os.system(`, `os.popen(` |
-| Dangerous imports | `import subprocess`, `import importlib`, `import ctypes` |
+| Dangerous calls | `eval(`, `exec(`, `compile(`, `__import__(` (also via `builtins.` / `__builtins__.`) |
+| Dangerous receiver methods | `subprocess.run(`; `os.system(`, `os.popen(`, `os.exec*(`, `os.spawn*(`, `os.posix_spawn(`, `os.startfile(` — same for `posix` / `nt` |
+| Dangerous imports | `import subprocess`, `import importlib`, `import ctypes`; `from os import *`, `from os import system` |
+| `getattr` on a dangerous module | `getattr(os, "system")`, or any runtime-chosen name: `getattr(os, name)` |
+
+Receivers are resolved through every binding a name may have (#119): `import os as o; o.system(...)`, `x = os; x.system(...)` (alias chains of any length and order, and a later re-assignment does not hide an earlier binding), `s = os.system; s(...)`, `from posix import system as s; s(...)`, `e = eval; e(...)`, `g = getattr; g(os, "system")`, and annotated (`x: T = os`), walrus (`(x := os)`) and tuple-unpacking (`a, b = os, 1`) bindings are all blocked. A local re-binding of `eval` cannot hide a builtin `eval(...)` call.
 
 **Layer 2 — Regex heuristic scan (secondary):** Catches obfuscation patterns that survive AST parsing:
 
 | Pattern | Catches |
 |---------|---------|
 | `getattr_builtin` | `getattr(__builtins__, ...)` |
-| `builtins_dict_access` | `__builtins__.__dict__[` |
+| `builtins_dict_access` | `__builtins__.__dict__[`, `builtins.__dict__[` |
 | `base64_exec` | `b64decode(` encoded payloads |
 | `dynamic_import` | `__import__(` dynamic imports |
 | `os_system` | `os.system(` shell execution |
 | `os_popen` | `os.popen(` process spawning |
 
-> **Result:** Returns `BLOCKED` if any threat is found (noting which layer detected it), or `HEURISTIC_PASS` if both layers are clean. A `HEURISTIC_PASS` is *not* a deterministic guarantee — it means no known dangerous constructs were found.
+> **Result:** Returns `BLOCKED` if any threat is found (noting which layer detected it), or `HEURISTIC_PASS` if both layers are clean. A `HEURISTIC_PASS` is *not* a deterministic guarantee — it means no known dangerous constructs were found, and it is not admissible.
+>
+> **Known gaps:** a blocklist over arbitrary code cannot be made sound. Not detected today: subscript callees (`[eval][0](...)`, `d["e"](...)`), modules reached through objects (`sys.modules["os"]`), bindings made by `for`/`with`/function arguments or attributes of other objects, and unlisted modules with side effects (`shutil`, `pickle`, `runpy`, `code`, `socket`, ...). Never execute a `heuristic_pass` payload without your own sandbox or allowlist.
 
 ### 📦 Passthrough (Unverifiable)
 
