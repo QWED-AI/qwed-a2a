@@ -59,7 +59,7 @@ pluggy==1.6.0
     # via
     #   pytest
     #   pytest-cov
-pycparser==3.0
+pycparser==3.11
     # via cffi
 pydantic==2.13.5
     # via
