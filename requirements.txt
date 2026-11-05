@@ -27,7 +27,7 @@ coverage[toml]==7.16.2
     # via pytest-cov
 cryptography==50.0.2
     # via qwed-a2a (pyproject.toml)
-fastapi==0.141.1
+fastapi==0.143.1
     # via qwed-a2a (pyproject.toml)
 h11==0.16.0
     # via httpcore
