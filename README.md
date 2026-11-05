@@ -28,7 +28,7 @@
   <a href="#-verification-engines">Engines</a> ·
   <a href="#-zero-trust-boundary">Trust Boundary</a> ·
   <a href="#-crypto-attestations">Attestations</a> ·
-  <a href="https://docs.qwedai.com/a2a/overview">📖 Full Documentation</a>
+  <a href="https://docs.qwedai.tech/a2a/overview">📖 Full Documentation</a>
 </div>
 
 ---
@@ -507,7 +507,7 @@ QWED A2A is the infrastructure-level verification gateway in the QWED ecosystem:
 | **qwed-infra** | IaC verification (Terraform, IAM, Cost) | [GitHub](https://github.com/QWED-AI/qwed-infra) |
 | **qwed-mcp** | Claude Desktop MCP integration | [GitHub](https://github.com/QWED-AI/qwed-mcp) |
 
-📖 [Full Documentation](https://docs.qwedai.com/a2a/overview) · 🎓 [Free Course](https://github.com/QWED-AI/qwed-learning)
+📖 [Full Documentation](https://docs.qwedai.tech/a2a/overview) · 🎓 [Free Course](https://github.com/QWED-AI/qwed-learning)
 
 ---
 

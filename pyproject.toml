@@ -9,7 +9,7 @@ description = "QWED Protocol Interceptor for Agent-to-Agent Verification"
 readme = "README.md"
 license = {file = "LICENSE"}
 authors = [
-    {name = "Rahul Dass", email = "rahul@qwedai.com"}
+    {name = "Rahul Dass", email = "rahul@qwedai.tech"}
 ]
 keywords = ["a2a", "verification", "middleware", "llm", "qwed"]
 classifiers = [

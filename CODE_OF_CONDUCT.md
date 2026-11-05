@@ -42,7 +42,7 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders at rahul@qwedai.com.
+reported to the community leaders at rahul@qwedai.tech.
 All complaints will be reviewed and investigated promptly and fairly.
 
 ## Enforcement Guidelines

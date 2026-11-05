@@ -12,7 +12,7 @@ QWED A2A is a security-critical component — it intercepts and verifies all
 inter-agent communication. If you discover a vulnerability, please report it
 privately.
 
-**Email:** rahul@qwedai.com
+**Email:** rahul@qwedai.tech
 
 Do NOT open a public GitHub issue for security vulnerabilities.
 

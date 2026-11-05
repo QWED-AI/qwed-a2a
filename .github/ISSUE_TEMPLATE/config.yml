@@ -4,7 +4,7 @@ contact_links:
     url: https://github.com/QWED-AI/qwed-a2a/discussions
     about: Ask questions or discuss ideas in GitHub Discussions
   - name: Documentation
-    url: https://docs.qwedai.com/a2a/overview
+    url: https://docs.qwedai.tech/a2a/overview
     about: Check our documentation first
   - name: Security Issue
     url: https://github.com/QWED-AI/qwed-a2a/security/policy
