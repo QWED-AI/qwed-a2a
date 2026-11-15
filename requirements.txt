@@ -47,6 +47,8 @@ mdurl==0.1.2
     # via markdown-it-py
 mypy-extensions==1.1.0
     # via black
+opentelemetry-api==1.45.2
+    # via fastapi
 packaging==26.3
     # via
     #   black
@@ -99,6 +101,7 @@ typing-extensions==4.16.0
     # via
     #   anyio
     #   fastapi
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   pytest-asyncio
