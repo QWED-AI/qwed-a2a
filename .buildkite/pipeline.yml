@@ -1,8 +1,10 @@
 steps:
   - label: "Run Tests"
     command:
-      - pip install --upgrade pip
-      - pip install -e ".[dev]"
-      - pip install pytest-timeout
-      - pytest tests/ -x --timeout=30 -q -p no:cacheprovider
+      # The agent's system Python is externally managed (PEP 668) and has no
+      # ensurepip, so create the venv without pip and let the system pip
+      # install into it with --python.
+      - python3 -m venv --without-pip .venv
+      - python3 -m pip --python .venv/bin/python install -e ".[dev]" pytest-timeout
+      - .venv/bin/python -m pytest tests/ -x --timeout=30 -q -p no:cacheprovider
     timeout_in_minutes: 10
