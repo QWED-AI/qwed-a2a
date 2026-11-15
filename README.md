@@ -515,6 +515,8 @@ QWED A2A is the infrastructure-level verification gateway in the QWED ecosystem:
 
 Apache 2.0 — See [LICENSE](LICENSE) for details.
 
+Redistributions keep the attribution in [NOTICE](https://github.com/QWED-AI/qwed-a2a/blob/main/NOTICE), and [TRADEMARKS.md](https://github.com/QWED-AI/qwed-a2a/blob/main/TRADEMARKS.md) says how the QWED name and logo may be used.
+
 ---
 
 <div align="center">
