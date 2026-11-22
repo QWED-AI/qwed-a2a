@@ -57,7 +57,7 @@ pathspec==1.1.1
     # via black
 platformdirs==4.12.2
     # via black
-pluggy==1.6.0
+pluggy==1.7.0
     # via
     #   pytest
     #   pytest-cov
